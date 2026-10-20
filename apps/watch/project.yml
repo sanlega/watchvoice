@@ -96,6 +96,8 @@ targets:
         SWIFT_STRICT_CONCURRENCY: complete
         # The model-embed script below reads Vendor/ outside the declared inputs.
         ENABLE_USER_SCRIPT_SANDBOXING: NO
+        # VoxWatchCore's swiftmodule imports CNeedle, so its clients must find the module map too.
+        SWIFT_INCLUDE_PATHS[sdk=watchos*]: "$(inherited) $(PROJECT_DIR)/CNeedle"
     postBuildScripts:
       - name: Embed Whistle model
         basedOnDependencyAnalysis: false
