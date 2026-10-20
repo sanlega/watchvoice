@@ -38,7 +38,8 @@ Rollback: `VOX_TAG=<tag anterior> docker compose up -d api worker`. Las migracio
 ```sh
 docker compose exec api python -m app.admin user-add --email santilega@gmail.com
 docker compose exec api python -m app.admin runner-add --email santilega@gmail.com --name pc --alias "mi pc" \
-  --webhook-url "<webhookUrl del T3 del PC>" --secret-env VOX_RUNNER_SECRET_PC --trust cooperative   --agent claude=claudeAgent:claude-opus-5-5:Claude --agent codex=codex:gpt-6.1-sol:Codex
+  --webhook-url "<webhookUrl del T3 del PC>" --secret-env VOX_RUNNER_SECRET_PC --trust cooperative \
+  --agent claude=claudeAgent:claude-opus-5-5:Claude --agent codex=codex:gpt-6.1-sol:Codex
 docker compose exec api python -m app.admin runner-add --email santilega@gmail.com --name vps --alias servidor \
   --webhook-url "<webhookUrl del T3 del VPS>" --secret-env VOX_RUNNER_SECRET_VPS --default
 docker compose exec api python -m app.admin pair --email santilega@gmail.com --name "Apple Watch"
