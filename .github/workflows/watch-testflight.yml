@@ -3,7 +3,8 @@ name: watch-testflight
 # Push a tag like v0.2.0: the tag becomes the version testers see. Run it by hand for an extra build.
 on:
   push:
-    tags: ["v*"]  workflow_dispatch:
+    tags: ["v*"]
+  workflow_dispatch:
     inputs:
       changelog:
         description: What to test (shown to TestFlight testers)
@@ -37,6 +38,12 @@ jobs:
           ruby-version: "3.3"
           bundler-cache: true
           working-directory: apps/watch
+      - uses: actions/cache@v4
+        with:
+          path: apps/watch/Vendor/needle
+          key: needle-${{ hashFiles('apps/watch/scripts/fetch-needle.sh') }}
+      # Whistle engine + model (sha256-pinned); the Release device build fails without them.
+      - run: scripts/fetch-needle.sh
       - run: xcodebuild -version
       - run: brew install xcodegen && xcodegen
       - name: Validate configuration
