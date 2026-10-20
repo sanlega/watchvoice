@@ -8,7 +8,7 @@ apps/watch (watchOS, independiente, sin app iOS)        backend/ (FastAPI)
 │ SwiftUI views ── RecordingStateMachine   │            │ POST /v1/instructions                      │
 │   AVAudioEngineCapture (16 kHz mono f32) │            │   auth device+scope → validar → digest     │
 │   TranscriberSelector                    │            │   idempotencia (api_idempotency + UNIQUE)  │
-│     WhistleTranscriber (actor, VOX_WHISTLE)│          │   TX: instruction + event + outbox → 202   │
+│     WhistleTranscriber (actor, principal)  │          │   TX: instruction + event + outbox → 202   │
 │     system_dictation (TextField)         │   HTTPS    │ processor (background / drain_outbox)      │
 │     RemoteTranscriber (consentimiento)   │ ─────────► │   HybridRouter: reglas → retriever → LLM   │
 │   FileInstructionRepository (cola)       │  JSON +    │   policy.evaluate (independiente del LLM)  │
@@ -28,7 +28,7 @@ apps/watch (watchOS, independiente, sin app iOS)        backend/ (FastAPI)
 6. **Identidad del reloj.** Es una fila de `devices` con `scopes`. El token es opaco y en BD solo se guarda su sha256. En el reloj vive en Keychain (`AfterFirstUnlockThisDeviceOnly`).
 7. **Privacidad.** Los logs son JSON con ids, estado y códigos, nunca texto ni tokens (hay un test). `instruction_events.safe_payload` no contiene texto. El cifrado en reposo de `instructions.text` está pendiente (W-046).
 8. **Conectividad.** La gestiona watchOS (Wi-Fi, iPhone o celular). La app no fuerza la ruta de red ni usa WatchConnectivity. Cola local persistente, con el mismo UUID y la misma `Idempotency-Key` en todos los reintentos.
-9. **ASR intercambiable.** Se usa `TranscriptionService` + `TranscriberSelector`. Whistle es experimental y queda detrás del flag `VOX_WHISTLE`; sin el binario reporta `.blocked(reason)` y nunca inventa texto.
+9. **ASR intercambiable.** Se usa `TranscriptionService` + `TranscriberSelector`. Whistle es el motor principal en dispositivo (watchOS 26.2, `libneedle.a` enlazado solo para el SDK `watchos`); en simulador y macOS es un stub que reporta `.blocked(reason)`. Si no está disponible o falla, se pasa al dictado del sistema con un aviso visible y nunca se inventa texto.
 10. **Ejecución en T3 Code.** Cada máquina (VPS, PC, Mac) es un `runner` con webhook firmado; el backend elige la máquina y T3 lanza el hilo en un worktree; el progreso vuelve por `POST /v1/runs/{id}/events`. Ver `docs/T3CODE_EXECUTION.md`.
 
 ## Máquina de estados de la UI

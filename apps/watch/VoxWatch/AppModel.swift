@@ -55,6 +55,8 @@ final class AppModel: ObservableObject {
 
     @Published private(set) var flow: FlowState = .idle
     @Published private(set) var dictating = false
+    /// Why system dictation replaced Whistle (the primary engine); shown on the dictation screen.
+    @Published private(set) var dictationNotice: String?
     @Published private(set) var records: [OutboxRecord] = []
     @Published private(set) var approvals: [Approval] = []
     @Published private(set) var projects: [Project] = []
@@ -113,8 +115,11 @@ final class AppModel: ObservableObject {
 
     func speakTapped() async {
         guard flow == .idle, !dictating else { return }
-        switch await selector.select(asrSettings) {
+        let settings = asrSettings
+        let route = await selector.select(settings)
+        switch route {
         case .systemDictation:
+            dictationNotice = TranscriberSelector.fallbackNotice(for: route, settings: settings)
             dictating = true
         case .service(let service):
             do {
@@ -147,7 +152,14 @@ final class AppModel: ObservableObject {
             let transcript = try await service.transcribe(audio, language: languageCode, keywords: projects.map(\.name))
             apply(.transcribed(transcript))
         } catch {
-            apply(.failed(.transcription(Self.code(error))))
+            if let notice = activeService.flatMap({ TranscriberSelector.fallbackNotice(afterFailureOf: $0.engine) }) {
+                VoxLog.event("asr.fallback", code: Self.code(error))
+                apply(.reset)
+                dictationNotice = notice
+                dictating = true
+            } else {
+                apply(.failed(.transcription(Self.code(error))))
+            }
         }
         activeService = nil
     }
@@ -164,11 +176,15 @@ final class AppModel: ObservableObject {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         dictating = false
+        dictationNotice = nil
         apply(.transcribed(Transcript(text: trimmed, language: languageCode, engine: .systemDictation,
                                       modelVersion: nil, onDevice: false, durationMs: nil)))
     }
 
-    func cancelDictation() { dictating = false }
+    func cancelDictation() {
+        dictating = false
+        dictationNotice = nil
+    }
 
     func retake() { apply(.retake) }
 

@@ -43,7 +43,7 @@ final class APIErrorTests: XCTestCase {
     }
 }
 
-#if !VOX_WHISTLE
+// macOS (`swift test`) always builds the stub: the real engine is watchOS-device only.
 final class WhistleStubTests: XCTestCase {
     func testStubReportsBlockedAndNeverReturnsText() async {
         let whistle = WhistleTranscriber.shared
@@ -76,6 +76,39 @@ final class WhistleStubTests: XCTestCase {
         #endif
     }
 
+    func testWhistleIsPrimaryWhenAvailable() async {
+        let available = FakeWhistle(status: .available)
+        let selector = TranscriberSelector(whistle: available, remote: RemoteTranscriber(), mock: nil)
+        let settings = TranscriberSelector.Settings()
+        let route = await selector.select(settings)
+        XCTAssertEqual(route.engine, .whistle)
+        XCTAssertNil(TranscriberSelector.fallbackNotice(for: route, settings: settings))
+    }
+
+    func testBlockedWhistleFallsBackWithVisibleNotice() async {
+        let selector = TranscriberSelector(whistle: WhistleTranscriber.shared, remote: RemoteTranscriber(), mock: nil)
+        let settings = TranscriberSelector.Settings()
+        let route = await selector.select(settings)
+        XCTAssertEqual(route.engine, .systemDictation)
+        XCTAssertEqual(TranscriberSelector.fallbackNotice(for: route, settings: settings),
+                       TranscriberSelector.whistleUnavailableNotice)
+        // The user turned Whistle off: dictation is a choice, not a fallback.
+        XCTAssertNil(TranscriberSelector.fallbackNotice(for: route, settings: .init(preferLocal: false)))
+    }
+
+    func testWhistleFailureFallsBackToDictationWithoutText() async {
+        let failing = FakeWhistle(status: .available, error: .engineFailure("boom"))
+        do {
+            _ = try await failing.transcribe(CapturedAudio(samples: [0.1]), language: "es", keywords: [])
+            XCTFail("a failing engine must not return text")
+        } catch {
+            XCTAssertEqual(TranscriberSelector.fallbackNotice(afterFailureOf: failing.engine),
+                           TranscriberSelector.whistleFailedNotice)
+        }
+        XCTAssertNil(TranscriberSelector.fallbackNotice(afterFailureOf: .mock))
+        XCTAssertNil(TranscriberSelector.fallbackNotice(afterFailureOf: .remote))
+    }
+
     func testRemoteTranscriberIsNotImplemented() async {
         do {
             _ = try await RemoteTranscriber().transcribe(CapturedAudio(samples: [0]), language: nil, keywords: [])
@@ -85,4 +118,15 @@ final class WhistleStubTests: XCTestCase {
         }
     }
 }
-#endif
+
+/// Stand-in for the real Whistle engine (which only exists on a watch). Never returns text.
+private struct FakeWhistle: TranscriptionService {
+    var status: ASRAvailability
+    var error: ASRError = .engineFailure("fake")
+
+    var engine: TranscriptionEngine { .whistle }
+    func availability() async -> ASRAvailability { status }
+    func transcribe(_ audio: CapturedAudio, language: String?, keywords: [String]) async throws -> Transcript {
+        throw error
+    }
+}

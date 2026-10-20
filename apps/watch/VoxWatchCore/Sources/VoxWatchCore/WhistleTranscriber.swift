@@ -1,11 +1,11 @@
 import Foundation
 
-// EXPERIMENTAL on-device ASR (Cactus "Whistle" model on the needle engine).
-// Only compiled for real with the VOX_WHISTLE condition (Debug-Whistle / Release-Whistle configs),
-// which link Vendor/needle/libneedle.a: watchOS 26.2+, physical device only (no simulator slice).
-// Hardware validation is pending (see BRIEF_PRD §7 gate).
+// Primary on-device ASR (Cactus "Whistle" model on the needle engine).
+// The real engine is compiled only for watchOS devices, where project.yml links Vendor/needle/libneedle.a
+// (watchOS 26.2+, arm64_32 + arm64, no simulator slice). Simulator and macOS (`swift test`) get the stub.
+// Hardware validation is pending (issue #13, gate W-023).
 
-#if VOX_WHISTLE
+#if os(watchOS) && !targetEnvironment(simulator)
 import CNeedle
 
 /// needle is process-global and NOT thread-safe, so all calls go through this single shared actor.
@@ -39,29 +39,22 @@ public actor WhistleTranscriber: TranscriptionService {
         guard !audio.samples.isEmpty else { throw ASRError.emptyResult }
         let keywordList: String? = keywords.isEmpty ? nil : keywords.joined(separator: "\n")
 
-        // Unverified: engine 3.3.3 is reported to return the required size when `out` is too short.
-        // We treat rc >= capacity as "too short" and retry once with a bigger buffer.
-        var capacity: Int32 = 8192
-        for _ in 0..<2 {
-            var out = [CChar](repeating: 0, count: Int(capacity))
-            let rc: Int32 = audio.samples.withUnsafeBufferPointer { pcm -> Int32 in
-                Self.withOptionalCString(language) { lang -> Int32 in
-                    Self.withOptionalCString(keywordList) { kw -> Int32 in
-                        out.withUnsafeMutableBufferPointer { buffer -> Int32 in
-                            needle_transcribe(pcm.baseAddress, Int32(pcm.count), lang, kw, 0, buffer.baseAddress, capacity)
-                        }
+        // needle.h: returns the transcript token count (<= 320), negative on failure. The JSON for a
+        // 30 s clip fits easily in 16 KB; word timestamps are off.
+        let capacity: Int32 = 16_384
+        var out = [CChar](repeating: 0, count: Int(capacity))
+        let rc: Int32 = audio.samples.withUnsafeBufferPointer { pcm -> Int32 in
+            Self.withOptionalCString(language) { lang -> Int32 in
+                Self.withOptionalCString(keywordList) { kw -> Int32 in
+                    out.withUnsafeMutableBufferPointer { buffer -> Int32 in
+                        needle_transcribe(pcm.baseAddress, Int32(pcm.count), lang, kw, 0, buffer.baseAddress, capacity)
                     }
                 }
             }
-            if rc < 0 { throw ASRError.engineFailure(Self.lastError()) }
-            if rc >= capacity {
-                capacity = min(rc + 1, 1 << 20)
-                continue
-            }
-            let bytes = out.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
-            return try Self.parse(Data(bytes), duration: audio.duration)
         }
-        throw ASRError.engineFailure("output buffer too small")
+        if rc < 0 { throw ASRError.engineFailure(Self.lastError()) }
+        let bytes = out.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+        return try Self.parse(Data(bytes), duration: audio.duration)
     }
 
     private func loadIfNeeded() throws {
