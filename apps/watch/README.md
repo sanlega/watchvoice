@@ -7,8 +7,8 @@ An independent watchOS app (no iOS companion). You speak or dictate an instructi
 - `VoxWatchCore/`: a Swift package with all non-UI logic (models, API client, Keychain, outbox, delivery, state machine, ASR selection, Whistle wrapper). The Xcode project also builds these same sources as a watchOS framework.
 - `VoxWatch/`: the SwiftUI app (views, `AppModel`, `AVAudioEngineCapture`, the "Dictar a VOX" App Intent and Siri/Atajos phrases).
 - `VoxWidgets/`: the watch face complication. A tap opens `vox://record`, which starts recording.
-- `CNeedle/module.modulemap`: exposes `needle.h` to Swift. Only the Whistle configs use it.
-- `scripts/fetch-needle.sh`: downloads `needle.h`, `libneedle.a` and `whistle.cact` into `Vendor/needle/`, which is gitignored.
+- `CNeedle/module.modulemap`: exposes `needle.h` to Swift (device builds only).
+- `scripts/fetch-needle.sh`: downloads `needle.h`, `libneedle.a` and `whistle.cact` (sha256-pinned) into `Vendor/needle/`, which is gitignored.
 
 ## Generate the Xcode project
 
@@ -29,7 +29,7 @@ The tests decode every contract fixture (copies live in `Tests/VoxWatchCoreTests
 - the state machine: a 202 receipt never means "task started"
 - canonical JSON (byte-equal to Python `json.dumps(..., sort_keys=True, separators=(",", ":"), ensure_ascii=False)`), signatures verifying with the public key, and mock decide/cancel/pause flows
 - delivery: retries reuse the same Idempotency-Key, 409/413/422 fail permanently, 429 honours Retry-After, an offline outbox delivers once back online, 401 halts the queue
-- the Whistle stub, the ASR selector and `APIError` retriability
+- the Whistle stub, the ASR selector, the fallback to system dictation and `APIError` retriability
 
 ## Pairing
 
@@ -46,17 +46,15 @@ Approvals, "Parar" (cancel run) and "Pausar todo" are signed with that key over 
 - The backend needs an APNs auth key: `VOX_APNS_KEY_PATH` (.p8), `VOX_APNS_KEY_ID`, `VOX_APNS_TEAM_ID`, `VOX_APNS_TOPIC=com.santilega.vox.watchkitapp`; the watch only sends its token to `PUT /v1/devices/me/push-token` (`development` in Debug, `production` in Release).
 - Categories: `VOX_APPROVAL_LOW` [Aprobar (first, so Double Tap approves), Rechazar] and `VOX_APPROVAL_HIGH` [Revisar, opens the app]. Aprobar/Rechazar run in the background and make exactly one signed call; on failure the watch posts a local "No se pudo aprobar, toca para reintentar" notification.
 
-## Enable Whistle (experimental, on-device ASR)
+## Whistle (primary on-device ASR)
 
-1. Run `scripts/fetch-needle.sh`. It checks the model size (16,919,407 bytes) and prints sha256 values. Pin those values in the script (there is a TODO) after the first verified download.
-2. Build with the `Debug-Whistle` or `Release-Whistle` configuration. These configs:
-   - define `VOX_WHISTLE`
-   - link `libneedle.a` with `-lc++`
-   - raise the deployment target to watchOS 26.2
-   - embed `whistle.cact` in the app bundle
-3. They need a physical watch running watchOS 26.2 or later. `libneedle.a` has no simulator slice, so the simulator cannot link it.
+The deployment target is watchOS 26.2 (what `libneedle.a` requires). There is one set of configurations:
 
-Without `VOX_WHISTLE`, `WhistleTranscriber` is a stub. It reports `blocked` and never returns text, so the app falls back to system dictation (a `TextField`, sent as engine `system_dictation`). Remote audio ASR exists only as a consent flag (default OFF) and a `RemoteTranscriber` stub that throws `notImplemented`.
+1. Run `scripts/fetch-needle.sh` before a device build. It downloads the engine and model from pinned Hugging Face commits and fails unless every sha256 matches.
+2. Device builds (`watchos` SDK) link `libneedle.a` with `-lc++`, compile the real `WhistleTranscriber` and bundle `whistle.cact` (a device build without it fails).
+3. Simulator builds and `swift test` compile the stub instead (`libneedle.a` has no simulator slice). The stub reports `blocked` and never returns text.
+
+At runtime Whistle is used when "Motor local (Whistle)" is on (the default) and the model loads. If it is unavailable, or a transcription throws, the app switches to system dictation (a `TextField`, sent as engine `system_dictation`) and shows a short notice; the recorded audio is discarded and nothing is made up. Remote audio ASR exists only as a consent flag (default OFF) and a `RemoteTranscriber` stub that throws `notImplemented`.
 
 ## TestFlight
 
@@ -77,6 +75,5 @@ Bundle ids: `com.santilega.vox` (the iOS stub Xcode requires for a watch-only ap
 - Push, notification actions and Double Tap have not been tried on a device.
 - **Whistle hardware validation is BLOCKED.** It has not run on a device. These needle details are unverified:
   - whether `needle_load` copies or references the model buffer
-  - how `needle_transcribe` reports its output size
-  - the exact Hugging Face file paths
+  - latency, memory and battery on a real watch (issue #13)
 - `AVAudioEngine` capture and resampling on a real watch have not been tested.

@@ -71,7 +71,7 @@ struct DictationField: View {
     }
 }
 
-/// Shown when no local engine is available.
+/// System dictation: chosen in Settings, or the fallback when Whistle is unavailable or fails.
 struct DictationView: View {
     @EnvironmentObject private var model: AppModel
 
@@ -80,6 +80,11 @@ struct DictationView: View {
             VStack(spacing: 8) {
                 Text("Dicta tu instrucción")
                     .font(.headline)
+                if let notice = model.dictationNotice {
+                    Text(notice)
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
                 DictationField()
                 Button("Cancelar", role: .cancel) { model.cancelDictation() }
             }

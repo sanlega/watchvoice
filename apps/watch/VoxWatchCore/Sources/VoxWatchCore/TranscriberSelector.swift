@@ -14,7 +14,7 @@ public enum ASRRoute: Sendable {
     }
 }
 
-/// Order: [mock if DEBUG and enabled] → Whistle (if preferred and available)
+/// Order: [mock if DEBUG and enabled] → Whistle (primary: if preferred and available)
 /// → remote (only with explicit audio consent and available) → system dictation (always).
 public struct TranscriberSelector: Sendable {
     public struct Settings: Sendable, Equatable {
@@ -47,5 +47,20 @@ public struct TranscriberSelector: Sendable {
         if settings.preferLocal, await whistle.availability() == .available { return .service(whistle) }
         if settings.remoteAudioConsent, await remote.availability() == .available { return .service(remote) }
         return .systemDictation
+    }
+
+    public static let whistleUnavailableNotice = "Whistle no disponible: usa el dictado del sistema"
+    public static let whistleFailedNotice = "Whistle falló: usa el dictado del sistema"
+
+    /// Whistle is the primary engine: non-nil when the user wants it but `route` is a fallback.
+    public static func fallbackNotice(for route: ASRRoute, settings: Settings) -> String? {
+        guard settings.preferLocal, route.engine == .systemDictation || route.engine == .remote else { return nil }
+        return whistleUnavailableNotice
+    }
+
+    /// A transcription that threw after recording. Whistle falls back to system dictation (the user
+    /// dictates again; no text is ever made up); any other engine just reports the failure.
+    public static func fallbackNotice(afterFailureOf engine: TranscriptionEngine) -> String? {
+        engine == .whistle ? whistleFailedNotice : nil
     }
 }

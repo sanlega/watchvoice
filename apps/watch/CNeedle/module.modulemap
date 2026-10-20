@@ -1,4 +1,4 @@
-// Used only by the *-Whistle configurations (SWIFT_INCLUDE_PATHS). The header is fetched by scripts/fetch-needle.sh.
+// `import CNeedle` (device builds only). Found via SWIFT_INCLUDE_PATHS. The header is fetched by scripts/fetch-needle.sh.
 module CNeedle [system] {
     header "../Vendor/needle/needle.h"
     link "c++"

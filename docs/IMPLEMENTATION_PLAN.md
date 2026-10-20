@@ -14,7 +14,7 @@ Hitos (BRIEF_PRD §14). H0: contrato + prueba Whistle real. H1: texto simulado W
 | 5 | W-044a Política + aprobación con challenge | A6 | 4 | Una inyección de prompt no evita `approval_required`; challenge obligatorio y de un solo uso; expirada → 409 | **Hecho** (primera puerta; recomprobación en el runner pendiente) |
 | 6 | W-010/011 App watchOS + máquina de estados | A2 | 1 | `xcodegen` genera el proyecto; la app navega Home/Record/Transcript/Delivery/Activity/Approvals/Settings con mocks; 202 ≠ tarea iniciada | Scaffolding; **sin compilar** |
 | 7 | W-031/032 Cliente API + cola persistente | A4 | 1 | Mismo UUID y misma clave en reintentos; 409/422 son fallo permanente; 429 respeta Retry-After; 401 detiene el drenado | Scaffolding + tests XCTest; **sin ejecutar** |
-| 8 | W-021 Wrapper Needle (experimental) | A3 | — | Con `VOX_WHISTLE` enlaza en dispositivo watchOS 26.2; sin el flag reporta `.blocked` y nunca devuelve texto | Stub hecho; **enlace BLOCKED** |
+| 8 | W-021 Wrapper Needle | A3 | — | Enlaza en dispositivo watchOS 26.2 (job CI `watch-device`); en simulador reporta `.blocked` y nunca devuelve texto | Hecho (#10); **prueba en reloj pendiente (#13)** |
 | 9 | W-023 Benchmark en hardware | A3 | 8 | Informe con p50/p95, RSS pico, crashes/OOM, batería en 20 dictados y WER en español sobre un set propio; decisión de gate | **BLOCKED** (sin reloj) |
 | 10 | W-050 CI | A7 | 3,6 | Job Linux: pytest backend. Job macOS: `swift test` VoxWatchCore + `xcodegen` + `xcodebuild` para el simulador sin Whistle | Workflow escrito; **primera ejecución pendiente** (sin push) |
 

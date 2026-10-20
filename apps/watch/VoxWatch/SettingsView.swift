@@ -124,7 +124,7 @@ struct SettingsView: View {
     private var whistleLabel: String {
         switch model.whistleStatus {
         case nil: return "Comprobando motor local…"
-        case .available?: return "Whistle disponible (experimental)"
+        case .available?: return "Whistle disponible"
         case .blocked(let reason)?: return "No disponible: \(reason)"
         }
     }

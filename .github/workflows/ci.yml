@@ -62,3 +62,28 @@ jobs:
       - run: xcodebuild -version
       - run: brew install xcodegen && xcodegen
       - run: xcodebuild -project VoxWatch.xcodeproj -target VoxWatch -sdk watchsimulator -configuration Debug CODE_SIGNING_ALLOWED=NO build
+  watch-device:
+    # Device build with the real Whistle engine: verifies libneedle.a links for arm64_32/arm64 and
+    # whistle.cact is bundled. It does not run anything (on-device acceptance is issue #13).
+    needs: changes
+    if: needs.changes.outputs.watch == 'true'
+    runs-on: macos-26
+    timeout-minutes: 30
+    defaults: {run: {working-directory: apps/watch}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: apps/watch/Vendor/needle
+          # The script pins the sha256 of every artifact, so its hash identifies the vendor set.
+          key: needle-${{ hashFiles('apps/watch/scripts/fetch-needle.sh') }}
+      - run: scripts/fetch-needle.sh
+      - run: xcodebuild -version
+      - run: brew install xcodegen && xcodegen
+      - run: xcodebuild -project VoxWatch.xcodeproj -target VoxWatch -sdk watchos -configuration Release CODE_SIGNING_ALLOWED=NO build
+      - name: Check model and engine are in the app
+        run: |
+          APP=build/Release-watchos/VoxWatch.app
+          test "$(stat -f%z "$APP/whistle.cact")" = 16919407
+          nm -gU "$APP/Frameworks/VoxWatchCore.framework/VoxWatchCore" | grep -q _needle_transcribe
+          lipo -info "$APP/Frameworks/VoxWatchCore.framework/VoxWatchCore"
