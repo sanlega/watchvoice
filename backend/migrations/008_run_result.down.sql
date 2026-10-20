@@ -1,0 +1,3 @@
+BEGIN;
+ALTER TABLE agent_runs DROP COLUMN result;
+COMMIT;

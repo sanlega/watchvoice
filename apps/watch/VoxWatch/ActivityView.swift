@@ -23,6 +23,9 @@ struct ActivityView: View {
                         }
                     }
                     .accessibilityElement(children: .combine)
+                    if record.remote?.status == .dispatched, let progress = record.remote?.progress {
+                        ResultLink(progress: progress)
+                    }
                     if let remote = record.remote, remote.status == .dispatched, let runId = remote.agentRunId,
                        let progress = remote.progress, !progress.runState.isTerminal {
                         StopRunButton(runId: runId)

@@ -209,14 +209,14 @@ def run_event(run_id: uuid.UUID, body: RunEventIn, request: Request, authorizati
         run = _run_for_callback(conn, run_id, authorization, now)
         state = {"succeeded": "succeeded", "failed": "failed"}.get(body.event, "running")
         values = {"state": state, "last_event_at": now}
-        values |= {k: v for k, v in {"summary": body.summary, "external_pr_url": body.pr_url,
+        values |= {k: v for k, v in {"summary": body.summary, "result": body.result, "external_pr_url": body.pr_url,
                                      "external_ref": body.external_ref}.items() if v is not None}
         conn.execute(update(db.agent_runs).where(db.agent_runs.c.id == run_id).values(**values))
         conn.execute(update(db.tasks).where(db.tasks.c.id == run.task_id)
                      .values(state=RUN_TO_TASK[state], updated_at=now))
         audit(conn, user_id=run.user_id, run_id=run_id, event_type=f"run.{body.event}", subject_type="run",
               subject_id=run_id, actor_type="runner", actor_id=run.executor,
-              payload={"pr_url": body.pr_url, "external_ref": body.external_ref})  # summary not audited: agent text
+              payload={"pr_url": body.pr_url, "external_ref": body.external_ref})  # summary/result not audited: agent text
         if body.event in EVENT_PUSH:
             level, title = EVENT_PUSH[body.event]
             text = "PR lista" if body.pr_url else sanitize(body.summary or "", 100) or body.event

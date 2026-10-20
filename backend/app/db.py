@@ -144,6 +144,7 @@ agent_runs = Table(
     # 004: runtime mode chosen by policy, deadline and stale notice
     Column("runtime_mode", Text), ts("deadline_at"), ts("stale_notified_at"),
     Column("agent", Json),  # 005: {key, provider, model} chosen for this run, or NULL = T3 default
+    Column("result", Text),  # 008: full agent answer (untrusted, never logged)
     ts("created_at", nullable=False, default=now), UniqueConstraint("task_id", "attempt"))
 
 capability_grants = Table(

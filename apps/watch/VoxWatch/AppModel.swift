@@ -1,3 +1,4 @@
+import AVFAudio
 import LocalAuthentication
 import SwiftUI
 import WatchKit
@@ -13,6 +14,7 @@ enum SettingsKey {
     static let useMockASR = "useMockASR"                 // DEBUG only
     static let paused = "paused"                         // last confirmed "Pausar todo" state
     static let pushToken = "pushToken"                   // APNs token hex (not a secret)
+    static let speakResult = "speakResult"               // "Leer en voz alta", default OFF
 }
 
 /// Non-isolated backend access, shared by the UI and the background notification action handler.
@@ -82,6 +84,7 @@ final class AppModel: ObservableObject {
     private var activeService: (any TranscriptionService)?
     private var currentClientId: UUID?
     private var recordingTimeout: Task<Void, Never>?
+    private let synthesizer = AVSpeechSynthesizer()
 
     init() {
         let fileURL = try? FileInstructionRepository.defaultFileURL()
@@ -102,6 +105,7 @@ final class AppModel: ObservableObject {
             SettingsKey.remoteAudioConsent: false,
             SettingsKey.serverURL: VoxBackend.defaultServerURL,
             SettingsKey.runnerHint: "",
+            SettingsKey.speakResult: false,
         ])
     }
 
@@ -242,6 +246,10 @@ final class AppModel: ObservableObject {
             guard let serverId = record.receipt?.instructionId else { continue }
             do {
                 let instruction = try await api.instruction(id: serverId)
+                if record.remote?.progress?.runState != .succeeded, instruction.progress?.runState == .succeeded,
+                   let result = instruction.progress?.result {
+                    speak(result, language: record.instruction.language)
+                }
                 try? await repository.setRemote(record.id, instruction: instruction)
                 if record.id == currentClientId { apply(.instructionUpdated(instruction)) }
                 connection = .online
@@ -250,6 +258,14 @@ final class AppModel: ObservableObject {
                 return
             }
         }
+    }
+
+    /// Polling only runs in the foreground, so this never speaks from the background.
+    private func speak(_ text: String, language: String?) {
+        guard UserDefaults.standard.bool(forKey: SettingsKey.speakResult), !text.isEmpty else { return }
+        let utterance = AVSpeechUtterance(string: text)
+        utterance.voice = AVSpeechSynthesisVoice(language: language ?? "es-ES")
+        synthesizer.speak(utterance)
     }
 
     // MARK: Approvals

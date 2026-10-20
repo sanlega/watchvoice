@@ -72,6 +72,7 @@ class RunProgress(BaseModel):
     agent: str | None = None  # key of the coding agent, e.g. "claude", "codex"
     run_state: str
     summary: str | None
+    result: str | None = None  # v0.8: full agent answer, untrusted display text
     pr_url: str | None
     updated_at: datetime | None
 
@@ -81,6 +82,7 @@ class RunEventIn(BaseModel):
     model_config = Strict
     event: Literal["started", "progress", "needs_input", "succeeded", "failed"]
     summary: str | None = Field(default=None, max_length=500)
+    result: str | None = Field(default=None, max_length=4000)  # v0.8: full answer; never logged/audited
     pr_url: str | None = Field(default=None, max_length=500, pattern=r"^https://")
     external_ref: str | None = Field(default=None, max_length=200)  # T3 thread id
 

@@ -26,6 +26,7 @@ struct DeliveryView: View {
 
                 if case .taskStarted(let instruction) = model.flow, let progress = instruction.progress {
                     RunProgressView(progress: progress)
+                    ResultLink(progress: progress)
                     if let runId = instruction.agentRunId {
                         Button { Task { await model.reply(to: runId) } } label: {
                             Label("Responder", systemImage: "arrowshape.turn.up.left")
@@ -129,6 +130,27 @@ struct StopRunButton: View {
             Text("Parada best-effort")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+        }
+    }
+}
+
+/// Opens the full agent answer (`result`, untrusted text: display only) when there is one.
+struct ResultLink: View {
+    let progress: RunProgress
+
+    var body: some View {
+        if let result = progress.result, !result.isEmpty {
+            NavigationLink {
+                ScrollView {
+                    Text(result)
+                        .font(.footnote)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .navigationTitle("Resultado")
+            } label: {
+                Label("Ver resultado", systemImage: "doc.text")
+            }
+            .accessibilityHint("Muestra la respuesta completa del agente")
         }
     }
 }

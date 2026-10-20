@@ -61,6 +61,7 @@ final class FixtureDecodingTests: XCTestCase {
         XCTAssertEqual(progress.runner, "mac")
         XCTAssertEqual(progress.runState, .running)
         XCTAssertNotNil(progress.summary)
+        XCTAssertEqual(progress.result?.hasPrefix("Causa:"), true)
         XCTAssertNil(progress.prUrl)
         XCTAssertNotNil(progress.updatedAt)
         XCTAssertTrue(value.needsPolling, "a running run keeps being polled")

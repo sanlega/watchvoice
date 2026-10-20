@@ -7,6 +7,7 @@ struct SettingsView: View {
     @AppStorage(SettingsKey.preferLocalASR) private var preferLocal = true
     @AppStorage(SettingsKey.remoteAudioConsent) private var remoteConsent = false
     @AppStorage(SettingsKey.runnerHint) private var runnerHint = ""
+    @AppStorage(SettingsKey.speakResult) private var speakResult = false
     #if DEBUG
     @AppStorage(SettingsKey.useMockASR) private var useMock = false
     #endif
@@ -35,6 +36,8 @@ struct SettingsView: View {
             Section("Ejecución") {
                 TextField("Máquina preferida", text: $runnerHint)
                     .accessibilityHint("Por ejemplo mac o vps. Vacío: decide el servidor.")
+                Toggle("Leer en voz alta", isOn: $speakResult)
+                    .accessibilityHint("Desactivado por defecto. Lee el resultado completo al terminar, con la app abierta.")
             }
 
             Section("Vincular") {

@@ -211,13 +211,17 @@ public struct RunProgress: Codable, Sendable, Equatable {
     public var runState: RunState
     /// Agent-written, untrusted display text. Never log it.
     public var summary: String?
+    /// v0.8: full agent answer (≤4000 chars). Agent-written, untrusted display text. Never log it.
+    public var result: String?
     public var prUrl: String?
     public var updatedAt: Date?
 
-    public init(runner: String?, runState: RunState, summary: String? = nil, prUrl: String? = nil, updatedAt: Date? = nil) {
+    public init(runner: String?, runState: RunState, summary: String? = nil, result: String? = nil,
+                prUrl: String? = nil, updatedAt: Date? = nil) {
         self.runner = runner
         self.runState = runState
         self.summary = summary
+        self.result = result
         self.prUrl = prUrl
         self.updatedAt = updatedAt
     }
