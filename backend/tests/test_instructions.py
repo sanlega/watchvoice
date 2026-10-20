@@ -194,7 +194,7 @@ def test_openapi_contract_matches_pydantic_models():
     import yaml
     spec = yaml.safe_load((FIXTURES.parent / "openapi.yaml").read_text("utf-8"))
     schemas = spec["components"]["schemas"]
-    assert spec["info"]["version"] == "0.6.0"
+    assert spec["info"]["version"] == "0.8.0"
     from app import schemas as S
     for name, model in [("NewInstruction", NewInstruction), ("Instruction", Instruction),
                         ("InstructionReceipt", InstructionReceipt), ("Approval", S.Approval),

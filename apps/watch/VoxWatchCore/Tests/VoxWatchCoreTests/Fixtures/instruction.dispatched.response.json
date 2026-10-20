@@ -13,6 +13,7 @@
     "runner": "mac",
     "run_state": "running",
     "summary": "Tests en verde, abriendo PR",
+    "result": "Causa: el temporizador no se reinicia al cambiar de pista. Arreglo propuesto en PlayerView.swift.",
     "pr_url": null,
     "updated_at": "2026-10-20T10:05:00Z"
   },

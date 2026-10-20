@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: VOX Agent API
-  version: 0.6.0
+  version: 0.8.0
   description: >-
     Self-hosted voice-to-project-agent API. Mutations are idempotent.
     v0.3.0 is purely additive over v0.2.0: transcript-first `/instructions` for the
@@ -13,6 +13,7 @@ info:
     RunProgress.agent.
     v0.6.0: reply_to_run_id continues an existing T3 conversation; intents open_issue and analyze_bug;
     run.message.v1 runner event.
+    v0.8.0: optional `result` (full agent answer, max 4000) on RunEventIn and RunProgress.
 servers:
   - url: https://vox.example.invalid/v1
 security:
@@ -457,6 +458,7 @@ components:
         agent: {type: [string, 'null'], description: 'v0.5: coding agent key chosen by the router (e.g. claude, codex)'}
         run_state: {type: string, enum: [queued, provisioning, running, waiting_approval, succeeded, failed, cancelled, timed_out]}
         summary: {type: [string, 'null'], description: 'Agent-written, untrusted display text'}
+        result: {type: [string, 'null'], maxLength: 4000, description: 'v0.8: full agent answer (e.g. analyze_bug); untrusted display text'}
         pr_url: {type: [string, 'null'], format: uri}
         updated_at: {type: [string, 'null'], format: date-time}
     RunEventIn:
@@ -466,5 +468,6 @@ components:
       properties:
         event: {type: string, enum: [started, progress, needs_input, succeeded, failed]}
         summary: {type: [string, 'null'], maxLength: 500}
+        result: {type: [string, 'null'], maxLength: 4000, description: 'v0.8: full agent answer on succeeded; never logged or audited'}
         pr_url: {type: [string, 'null'], maxLength: 500, pattern: '^https://'}
         external_ref: {type: [string, 'null'], maxLength: 200, description: 'T3 Code thread id'}

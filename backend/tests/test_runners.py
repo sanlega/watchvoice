@@ -106,6 +106,26 @@ def test_progress_callbacks_update_task_and_watch_view(renv):
     assert post({"event": "progress"}).status_code == 409  # terminal is immutable
 
 
+def test_succeeded_result_is_exposed_but_never_logged_or_audited(renv, caplog):
+    import logging
+    caplog.set_level(logging.DEBUG, logger="vox")
+    iid = renv.submit().json()["instruction_id"]
+    relay = FakeRelay()
+    deliver_dispatches(renv.engine, relay, base_url="https://vox.example")
+    payload = json.loads(relay.calls[0][1])
+    post = lambda body: renv.client.post(f"/v1/runs/{payload['run_id']}/events", json=body,
+                                         headers={"Authorization": f"Bearer {payload['callback']['token']}"})
+    assert renv.get(iid)["progress"]["result"] is None
+    assert post({"event": "succeeded", "result": "x" * 4001}).status_code == 422
+    result = "Causa: token 9137 caducado. " + "a" * 3970
+    assert len(result) <= 4000
+    assert post({"event": "succeeded", "summary": "Diagnóstico listo", "result": result}).status_code == 204
+    assert renv.get(iid)["progress"]["result"] == result
+    assert caplog.records and all("9137" not in r.getMessage() and "9137" not in str(r.__dict__) for r in caplog.records)
+    with renv.engine.connect() as c:
+        assert all("9137" not in json.dumps(p, default=str) for p in c.execute(select(db.audit_events.c.payload)).scalars())
+
+
 def test_callback_rejected_before_dispatch(renv):
     iid = renv.submit().json()["instruction_id"]
     run_id = renv.get(iid)["agent_run_id"]

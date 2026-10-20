@@ -49,7 +49,7 @@ callback url {{body.callback.url}} · token {{body.callback.token}} · approval 
 
 TASK line by task kind (copy the one that applies):
 - open_issue: "Open ONE issue in this project's GitHub repo with `gh issue create` (clear title, body from the dictation, label idea or bug if they exist). Do not change files. Report succeeded with pr_url = the issue URL."
-- analyze_bug: "Investigate the bug: read code, logs and tests, reproduce if cheap. Do NOT modify files or commit. Report succeeded with a ≤200-char diagnosis and leave the full analysis in this conversation."
+- analyze_bug: "Investigate the bug: read code, logs and tests, reproduce if cheap. Do NOT modify files or commit. Report succeeded with a ≤200-char diagnosis as summary and the full analysis as result."
 - capture_idea: "Append the idea as a dated bullet (YYYY-MM-DD) to IDEAS.md at the project root (create it if missing). Do nothing else."
 - new_project: "Set up this new project as described (README first). Commit on the current branch."
 - implement_feature / continue_task / other: "Do the requested change on branch vox/{{body.run_id}} and open a draft PR."
@@ -64,5 +64,5 @@ WORKER RULES:
 
 REPORTING (shell): heartbeat at least every 10 min {"event":"progress","summary":"<≤200 chars, no secrets>"};
 blocked on a human decision {"event":"needs_input","summary":"<question>"}; at the end
-{"event":"succeeded","summary":"<result>","pr_url":"https://…"} or {"event":"failed","summary":"<why>"} using
+{"event":"succeeded","summary":"<≤200 chars>","result":"<full answer, ≤4000 chars, no secrets>","pr_url":"https://…"} or {"event":"failed","summary":"<why>"} using
 curl -fsS -X POST "<callback url>" -H "Authorization: Bearer <token>" -H "Content-Type: application/json" -d '<json>'
