@@ -114,6 +114,20 @@ class ApprovalDecision(SignedBody):
     action_fingerprint: str = Field(min_length=64, max_length=64)
 
 
+class RunnerProject(BaseModel):
+    """One T3 project as reported by a runner (runner.sync.v1). Untrusted machine data."""
+    model_config = Strict
+    title: str = Field(min_length=1, max_length=200)
+    folder: str = Field(max_length=1000)
+    has_git: bool
+    has_origin: bool
+
+
+class RunnerProjectsIn(BaseModel):
+    model_config = Strict
+    projects: list[RunnerProject] = Field(max_length=500)
+
+
 class PauseIn(SignedBody):
     paused: bool
 

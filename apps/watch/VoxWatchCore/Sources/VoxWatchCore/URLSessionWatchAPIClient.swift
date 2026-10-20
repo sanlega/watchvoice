@@ -75,6 +75,10 @@ public struct URLSessionWatchAPIClient: WatchAPIClient {
         }
     }
 
+    public func syncProjects() async throws {
+        _ = try await data("POST", baseURL.appendingPathComponent("runners/sync"))
+    }
+
     private func send<T: Decodable>(_ method: String, _ url: URL, body: Data? = nil, idempotencyKey: UUID? = nil,
                                     authorized: Bool = true) async throws -> T {
         let raw = try await data(method, url, body: body, idempotencyKey: idempotencyKey, authorized: authorized)

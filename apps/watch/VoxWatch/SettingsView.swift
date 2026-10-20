@@ -38,6 +38,10 @@ struct SettingsView: View {
                     .accessibilityHint("Por ejemplo mac o vps. Vacío: decide el servidor.")
                 Toggle("Leer en voz alta", isOn: $speakResult)
                     .accessibilityHint("Desactivado por defecto. Lee el resultado completo al terminar, con la app abierta.")
+                Button("Sincronizar") {
+                    Task { await model.syncProjects() }
+                }
+                .accessibilityHint("Pide a cada máquina su lista de proyectos")
             }
 
             Section("Vincular") {

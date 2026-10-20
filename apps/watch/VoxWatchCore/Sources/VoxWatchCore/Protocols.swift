@@ -95,6 +95,8 @@ public protocol WatchAPIClient: Sendable {
     func cancelRun(runId: UUID, body: SignedBody, idempotencyKey: UUID) async throws
     func setPaused(_ request: PauseRequest) async throws -> PauseResult
     func policy() async throws -> [PolicyRule]
+    /// Asks every machine to report its T3 projects now (runner.sync.v1).
+    func syncProjects() async throws
 }
 
 public protocol AuthSession: Sendable {

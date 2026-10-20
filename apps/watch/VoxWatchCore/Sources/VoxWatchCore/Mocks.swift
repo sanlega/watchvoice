@@ -19,7 +19,8 @@ public actor MockWatchAPIClient: WatchAPIClient {
     public private(set) var cancels: [(runId: UUID, body: SignedBody)] = []
     public private(set) var pauses: [PauseRequest] = []
     public private(set) var pushTokens: [PushTokenRequest] = []
-    /// When set, the next decide/cancel/pause throws it.
+    public private(set) var syncs = 0
+    /// When set, the next decide/cancel/pause/sync throws it.
     private var nextControlError: APIError?
     private var submitResults: [Result<InstructionReceipt, APIError>]
     private var instructions: [UUID: Instruction]
@@ -89,6 +90,11 @@ public actor MockWatchAPIClient: WatchAPIClient {
     }
 
     public func policy() async throws -> [PolicyRule] { [] }
+
+    public func syncProjects() async throws {
+        try throwControlError()
+        syncs += 1
+    }
 
     public func setNextControlError(_ error: APIError?) {
         nextControlError = error
