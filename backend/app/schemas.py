@@ -30,6 +30,7 @@ class NewInstruction(BaseModel):
     language: str | None = Field(default=None, pattern=r"^[a-z]{2}(-[A-Z]{2})?$")
     project_hint: UUID | None = None
     runner_hint: str | None = Field(default=None, min_length=1, max_length=64)  # v0.3: "mac", "vps", ...
+    reply_to_run_id: UUID | None = None  # v0.6: answer inside that run's conversation instead of a new session
     transcription: Transcription
     client: ClientInfo
 

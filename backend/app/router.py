@@ -60,7 +60,11 @@ class TokenOverlapRetriever:
 
 
 NEW_PROJECT = re.compile(r"\bcrea(?:r)?\s+(?:un\s+)?(?:nuevo\s+)?proyecto\s+(?:nuevo\s+)?(?:llamado|que se llame|con el nombre)\s+(.+)", re.I)
-CAPTURE_ONLY = re.compile(r"\b(no (?:lo|la|los|las) ejecutes|no ejecutes|solo (?:anota|apunta)|anota esta idea|apunta esta idea)\b")
+CAPTURE_ONLY = re.compile(r"\b(no (?:lo|la|los|las) ejecutes|no ejecutes|solo (?:anota|apunta)|anota esta idea|apunta esta idea"
+                          r"|(?:anota|apunta)(?:lo)? en (?:mis|tus|las) notas)\b")
+OPEN_ISSUE = re.compile(r"\b(abre|abrir|crea|crear|registra|mete|pon)\b.{0,40}\b(issue|incidencia|ticket)s?\b")
+ANALYZE_BUG = re.compile(r"\b(analiza|analizar|investiga|investigar|revisa|mira|diagnostica)\b.{0,60}"
+                         r"\b(bug|error|fallo|crash|problema|excepcion)\b")
 CONTINUATION = re.compile(r"\b(sigue con|continua con|retoma)\b|\b(lo|eso) de ayer\b")
 
 
@@ -100,7 +104,8 @@ class HybridRouter:
             pid = explicit[0].id if len(explicit) == 1 else None
             return Route("capture_idea", project_id=pid, task_title=_title(text), confidence=1.0, reason="capture_only")
 
-        intent = "continue_task" if CONTINUATION.search(t) else "implement_feature"
+        intent = ("open_issue" if OPEN_ISSUE.search(t) else "analyze_bug" if ANALYZE_BUG.search(t)
+                  else "continue_task" if CONTINUATION.search(t) else "implement_feature")
         if len(explicit) == 1:
             return Route(intent, project_id=explicit[0].id, task_title=_title(text), confidence=1.0,
                          reason="explicit_reference")

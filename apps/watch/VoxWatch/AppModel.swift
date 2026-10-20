@@ -64,6 +64,8 @@ final class AppModel: ObservableObject {
     @Published var notice: String?
     /// Set by a notification tap; RootView shows the approvals sheet.
     @Published var openApprovalId: UUID?
+    /// Set by "Responder": the next dictation continues that run's conversation.
+    @Published private(set) var replyTo: UUID?
 
     var activity: [OutboxRecord] { Array(records.prefix(10)) }
     var pendingCount: Int { records.filter { $0.status == .pending || $0.status == .sending }.count }
@@ -172,7 +174,7 @@ final class AppModel: ObservableObject {
         guard case .reviewing(let transcript) = flow else { return }
         let instruction = NewInstruction(transcript: transcript, projectHint: projectHint,
                                          runnerHint: UserDefaults.standard.string(forKey: SettingsKey.runnerHint),
-                                         appVersion: appVersion)
+                                         replyToRunId: replyTo, appVersion: appVersion)
         do {
             _ = try await repository.enqueue(instruction, now: Date())
         } catch {
@@ -182,11 +184,20 @@ final class AppModel: ObservableObject {
             return
         }
         currentClientId = instruction.clientInstructionId
+        replyTo = nil
         apply(.saved(instruction.clientInstructionId))
         await refresh()
     }
 
+    /// Start a dictation that answers inside the conversation of `runId`.
+    func reply(to runId: UUID) async {
+        finish()
+        replyTo = runId
+        await speakTapped()
+    }
+
     func finish() {
+        replyTo = nil
         currentClientId = nil
         apply(.reset)
     }

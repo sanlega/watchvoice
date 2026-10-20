@@ -13,7 +13,7 @@ from . import db, devicesig, notify
 from .deps import Problem, device, engine, require, require_idempotency_key, require_signature
 from .policy import CATALOG, evaluate, risk_of
 from .processor import apply_rule, audit, aware, create_approval, load_rules, sha256
-from .runners import enqueue_cancel, enqueue_dispatch, verify_callback_token
+from .runners import enqueue_cancel, enqueue_start, verify_callback_token
 from .schemas import (AgentApprovalIn, AgentApprovalOut, Approval, ApprovalDecision, PairIn, PairOut, PauseIn,
                       PolicyRuleOut, PushTokenIn, RunEventIn, SignedBody)
 
@@ -129,7 +129,7 @@ def _apply_decision(conn, ap, approved: bool, dev, now):
         _set_run_state(conn, run, "queued" if approved else "cancelled", now)
         if approved and run.runner_id:
             trace = conn.execute(select(db.tasks.c.trace_id).where(db.tasks.c.id == run.task_id)).scalar_one()
-            enqueue_dispatch(conn, run.id, trace)
+            enqueue_start(conn, run, trace)
         status = "dispatched" if approved else "cancelled"
     elif ap.kind == "policy_change":
         if approved:

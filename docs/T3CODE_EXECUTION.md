@@ -44,3 +44,13 @@ Watch ─texto─► VOX backend ─router + política─► task + run ─outbo
 ## No verificado todavía
 - La entrega real por el relay de T3 Connect y el formato exacto de la firma que espera T3 (hex + `sha256=` es lo que documenta).
 - `curl` con comillas simples en Windows/PowerShell: el agente del PC puede tener que adaptar el comando.
+
+## Sesiones y conversaciones (v0.6, 2026-10-20)
+- Cada instrucción abre una **sesión nueva** (un hilo de T3) en el proyecto que decide el router. Si el proyecto no existe en esa máquina y la intención es `new_project`, el lanzador lo crea con `t3_project_create`. El hilo del proyecto "VOX Dispatcher" solo lanza la sesión y termina; no se reutiliza ni recibe mensajes del usuario.
+- Tareas sencillas, con su instrucción para el agente:
+  - `open_issue`: `gh issue create`, sin tocar archivos. No pide aprobación, porque `issues.write` es un permiso por defecto.
+  - `analyze_bug`: solo diagnóstico, sin cambios.
+  - `capture_idea`: añade una línea a `IDEAS.md` en el proyecto de notas (`app.admin project-add --notes`). Si no hay proyecto de notas, la idea solo se guarda en VOX.
+  - `new_project`.
+  - `implement_feature`: rama y PR en borrador.
+- **Responder en la misma conversación:** desde el reloj, con "Responder" (`reply_to_run_id`), o por voz ("sigue con lo de Musiquillas…", que continúa la última conversación de ese proyecto). Se crea un intento nuevo del run, se vuelve a evaluar la política sobre el texto nuevo y el lanzador hace `t3_thread_send` al mismo hilo (`run.message.v1`, con `clientRequestId` = id del run). El intento anterior queda sustituido, así que un timeout ya no puede cancelar el hilo.

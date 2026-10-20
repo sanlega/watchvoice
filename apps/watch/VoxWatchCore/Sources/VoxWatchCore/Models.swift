@@ -78,11 +78,15 @@ public struct NewInstruction: Codable, Sendable, Equatable {
     public var projectHint: UUID?
     /// Preferred T3 Code machine ("mac", "vps"); nil lets the backend decide.
     public var runnerHint: String?
+    /// v0.6: answer inside that run's T3 conversation instead of opening a new session.
+    public var replyToRunId: UUID?
     public var transcription: Transcription
     public var client: Client
 
     /// Builds a contract-valid instruction. `id` is generated on device and reused as Idempotency-Key.
-    public init(id: UUID = UUID(), transcript: Transcript, projectHint: UUID? = nil, runnerHint: String? = nil, appVersion: String) {
+    public init(id: UUID = UUID(), transcript: Transcript, projectHint: UUID? = nil, runnerHint: String? = nil,
+                replyToRunId: UUID? = nil, appVersion: String) {
+        self.replyToRunId = replyToRunId
         clientInstructionId = id
         source = "apple_watch"
         // shortcut: contract caps text at 4000 chars; a 30 s dictation is far below, so we truncate instead of failing.

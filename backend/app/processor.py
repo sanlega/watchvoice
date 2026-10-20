@@ -17,7 +17,7 @@ from .notify import APPROVAL_TTL
 from .policy import evaluate, requested_capabilities
 from .router import HybridRouter, ProjectRef, norm
 from .router_jev import agent_for, jev_from_env, runner_refs
-from .runners import enqueue_dispatch, select_runner
+from .runners import enqueue_dispatch, enqueue_message, select_runner
 
 log = logging.getLogger("vox.processor")
 EVENT_RECEIVED = "instruction.received.v1"
@@ -135,6 +135,9 @@ def process_instruction(engine, instruction_id, router: HybridRouter | None = No
                 values |= {"status": "needs_clarification", "error_code": change.error_code}
             else:
                 values |= handle_policy_change(conn, ins, change, now)
+        elif ins.reply_to_run_id is not None:
+            values["intent"], reason = "continue_task", "reply"
+            values |= follow_up(conn, ins, ins.reply_to_run_id, now)
         else:
             decision = None
             if jev and ins.project_hint is None:
@@ -171,14 +174,21 @@ def route_and_dispatch(conn, ins, route, now, jev_decision=None) -> dict:
         return values | {"status": "needs_clarification", "error_code": "ambiguous_route",
                          "candidates": [{"project_id": str(c.id), "name": c.name} for c in route.candidates]}
     if route.intent == "capture_idea":
-        return values | {"status": "captured", "project_id": route.project_id}
+        notes = notes_project(conn, ins.user_id)
+        if notes is None:  # no notes project registered: the idea stays stored in VOX only
+            return values | {"status": "captured", "project_id": route.project_id}
+        route.project_id = notes
+    if route.intent == "continue_task" and route.project_id is not None:
+        if (prev := latest_conversation(conn, ins.user_id, route.project_id)) is not None:
+            return values | follow_up(conn, ins, prev.id, now)
     runner_error = jev_decision.runner_error if jev_decision and not ins.runner_hint else None
     runner = None
     if not runner_error:
         runner, runner_error = select_runner(conn, ins.user_id, ins.text, ins.runner_hint,
                                              project_context(conn, route.project_id),
                                              named=jev_decision.runner_name if jev_decision else None)
-    agent, agent_error = agent_for(runner, jev_decision.agent_key if jev_decision else None) if runner         else (None, None)
+    agent, agent_error = (agent_for(runner, jev_decision.agent_key if jev_decision else None) if runner
+                          else (None, None))
     if runner_error or agent_error:
         return values | {"status": "needs_clarification", "error_code": runner_error or agent_error}
 
@@ -193,7 +203,7 @@ def route_and_dispatch(conn, ins, route, now, jev_decision=None) -> dict:
         project_id = uuid.uuid4()
         conn.execute(db.projects.insert().values(
             id=project_id, user_id=ins.user_id, slug=_slug(conn, ins.user_id, route.new_project_name),
-            name=route.new_project_name, description=""))
+            name=route.new_project_name, description="", context_json={"create_on_runner": True}))
         audit(conn, user_id=ins.user_id, event_type="project.created", subject_type="project",
               subject_id=project_id, trace_id=ins.trace_id, payload={"instruction_id": str(ins.id)})
 
@@ -222,6 +232,54 @@ def route_and_dispatch(conn, ins, route, now, jev_decision=None) -> dict:
     audit(conn, user_id=ins.user_id, run_id=run_id, event_type="task.created", subject_type="task",
           subject_id=task_id, trace_id=ins.trace_id,
           payload={"policy": decision.effect, "capability": decision.capability, "mode": decision.mode})
+    return values
+
+
+def notes_project(conn, user_id):
+    for pid, ctx in conn.execute(select(db.projects.c.id, db.projects.c.context_json).where(
+            db.projects.c.user_id == user_id, db.projects.c.archived_at.is_(None))):
+        if (ctx or {}).get("notes"):
+            return pid
+    return None
+
+
+def latest_conversation(conn, user_id, project_id):
+    """Most recent run in this project whose T3 thread exists: 'sigue con eso' continues it."""
+    return conn.execute(select(db.agent_runs).join(db.tasks, db.tasks.c.id == db.agent_runs.c.task_id).where(
+        db.agent_runs.c.user_id == user_id, db.tasks.c.project_id == project_id,
+        db.agent_runs.c.external_ref.is_not(None)).order_by(db.agent_runs.c.created_at.desc()).limit(1)).first()
+
+
+def follow_up(conn, ins, prev_run_id, now) -> dict:
+    """Send the instruction into the SAME T3 conversation as a new run attempt (run.message.v1).
+    Policy is evaluated again on the new text; the agent and runtime mode of the thread are kept."""
+    prev = conn.execute(select(db.agent_runs).where(db.agent_runs.c.id == prev_run_id,
+                                                    db.agent_runs.c.user_id == ins.user_id)).first()
+    if prev is None or prev.external_ref is None or prev.runner_id is None:
+        return {"status": "needs_clarification", "error_code": "conversation_not_found"}
+    project_id = conn.execute(select(db.tasks.c.project_id).where(db.tasks.c.id == prev.task_id)).scalar_one()
+    decision = evaluate(requested_capabilities(ins.text), load_rules(conn, ins.user_id), prev.runner_id,
+                        project_id, now)
+    if decision.effect == "deny":
+        return {"status": "failed", "error_code": "policy_denied", "project_id": project_id}
+    attempt = conn.execute(select(db.agent_runs.c.attempt).where(db.agent_runs.c.task_id == prev.task_id)
+                           .order_by(db.agent_runs.c.attempt.desc()).limit(1)).scalar_one() + 1
+    gated, run_id = decision.effect == "ask", uuid.uuid4()
+    conn.execute(db.agent_runs.insert().values(
+        id=run_id, user_id=ins.user_id, task_id=prev.task_id, attempt=attempt, executor=prev.executor,
+        runner_id=prev.runner_id, runtime_mode=prev.runtime_mode, agent=prev.agent, external_ref=prev.external_ref,
+        state="waiting_approval" if gated else "queued"))
+    values = {"status": "awaiting_approval" if gated else "dispatched", "project_id": project_id,
+              "task_id": prev.task_id, "agent_run_id": run_id}
+    if gated:
+        values["approval_id"] = create_approval(
+            conn, user_id=ins.user_id, kind="action", capability=decision.capability, risk=decision.risk,
+            summary=f"{decision.capability} · respuesta", now=now, run_id=run_id, instruction_id=ins.id,
+            trace_id=ins.trace_id)
+    else:
+        enqueue_message(conn, run_id, ins.trace_id)
+    audit(conn, user_id=ins.user_id, run_id=run_id, event_type="run.follow_up", subject_type="run", subject_id=run_id,
+          trace_id=ins.trace_id, payload={"previous_run_id": str(prev.id), "policy": decision.effect})
     return values
 
 

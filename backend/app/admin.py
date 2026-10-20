@@ -6,6 +6,7 @@ python -m app.admin runner-add --email ... --name vps --webhook-url https://rela
     --secret-env VOX_RUNNER_SECRET_VPS [--alias servidor] [--default] [--trust cooperative]
 python -m app.admin rule-add --email ... [--runner vps] [--project musiquillas] --mode granular \
     --effect deploy.production=ask --effect data.delete=deny [--hours 2]
+python -m app.admin project-add --email ... --name Musiquillas [--alias musiquilla] [--default-runner pc] [--notes]
 python -m app.admin rule-list --email ... | rule-revoke --email ... --id <rule_id> | status --email ...
 """
 import argparse
@@ -18,7 +19,8 @@ from sqlalchemy import select, update
 from . import db
 from .control import PAIR_TTL, new_pairing_code
 from .policy import CATALOG, FLOOR
-from .processor import apply_rule, audit, load_rules, sha256
+from .processor import _slug, apply_rule, audit, load_rules, sha256
+from .router import norm
 
 
 def _user(conn, email):
@@ -38,7 +40,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="vox-admin")
     ap.add_argument("--db", default=os.environ.get("VOX_DATABASE_URL", "sqlite:///./vox-dev.db"))
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ["user-add", "pair", "runner-add", "rule-add", "rule-list", "rule-revoke", "status"]:
+    for name in ["user-add", "pair", "runner-add", "project-add", "rule-add", "rule-list", "rule-revoke", "status"]:
         p = sub.add_parser(name)
         p.add_argument("--email", required=True)
         if name == "pair":
@@ -54,6 +56,12 @@ def main(argv=None):
             p.add_argument("--agent", action="append", default=[],
                            help="key=provider:model[:description], e.g. claude=claudeAgent:claude-opus-5-5:Claude; "
                                 "first one is the default")
+        if name == "project-add":  # name must match the T3 project title on the runners
+            p.add_argument("--name", required=True)
+            p.add_argument("--description", default="")
+            p.add_argument("--alias", action="append", default=[])
+            p.add_argument("--default-runner")
+            p.add_argument("--notes", action="store_true", help="where 'apunta esta idea' writes")
         if name == "rule-add":
             p.add_argument("--runner")
             p.add_argument("--project")
@@ -97,6 +105,15 @@ def main(argv=None):
                                                     is_default=args.default, trust=args.trust))
             _audit(conn, uid, "runner.added", "runner", rid, {"name": args.name, "trust": args.trust})
             print(rid)
+        elif args.cmd == "project-add":
+            pid, ctx = uuid.uuid4(), {k: v for k, v in {"default_runner": args.default_runner,
+                                                        "notes": args.notes or None}.items() if v}
+            conn.execute(db.projects.insert().values(id=pid, user_id=uid, slug=_slug(conn, uid, args.name),
+                                                     name=args.name, description=args.description, context_json=ctx))
+            for alias in args.alias:
+                conn.execute(db.project_aliases.insert().values(project_id=pid, alias=alias, alias_norm=norm(alias)))
+            _audit(conn, uid, "project.added", "project", pid, {"notes": args.notes})
+            print(pid)
         elif args.cmd == "rule-add":
             effects = dict(e.split("=", 1) for e in args.effect)
             bad = [c for c, e in effects.items() if c not in CATALOG or e not in {"allow", "ask", "deny"}]

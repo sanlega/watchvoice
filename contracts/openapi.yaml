@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: VOX Agent API
-  version: 0.5.0
+  version: 0.6.0
   description: >-
     Self-hosted voice-to-project-agent API. Mutations are idempotent.
     v0.3.0 is purely additive over v0.2.0: transcript-first `/instructions` for the
@@ -11,6 +11,8 @@ info:
     challenge_token), pairing, push registration, agent approval requests, signed cancel, pause.
     v0.5.0: routing by a language model (TypeSafe Jev) selects project, machine and coding agent;
     RunProgress.agent.
+    v0.6.0: reply_to_run_id continues an existing T3 conversation; intents open_issue and analyze_bug;
+    run.message.v1 runner event.
 servers:
   - url: https://vox.example.invalid/v1
 security:
@@ -400,6 +402,7 @@ components:
         text: {type: string, minLength: 1, maxLength: 4000}
         language: {type: [string, 'null'], pattern: '^[a-z]{2}(-[A-Z]{2})?$'}
         project_hint: {type: [string, 'null'], format: uuid}
+        reply_to_run_id: {type: [string, 'null'], format: uuid, description: 'v0.6: answer inside that run''s T3 conversation (new run attempt, same thread) instead of opening a new session'}
         runner_hint: {type: [string, 'null'], minLength: 1, maxLength: 64, description: 'Name or alias of the T3 Code machine (e.g. mac, vps). Otherwise taken from the text ("en el mac"), the project default, or the user default.'}
         transcription:
           type: object
@@ -436,13 +439,13 @@ components:
         id: {type: string, format: uuid}
         client_instruction_id: {type: string, format: uuid}
         status: {$ref: '#/components/schemas/InstructionStatus'}
-        intent: {type: [string, 'null'], enum: [new_project, existing_project, continue_task, capture_idea, research, implement_feature, status_query, approval_decision, policy_change, null]}
+        intent: {type: [string, 'null'], enum: [new_project, existing_project, continue_task, capture_idea, research, implement_feature, status_query, approval_decision, policy_change, open_issue, analyze_bug, null]}
         project_id: {type: [string, 'null'], format: uuid}
         task_id: {type: [string, 'null'], format: uuid}
         agent_run_id: {type: [string, 'null'], format: uuid}
         approval_id: {type: [string, 'null'], format: uuid}
         candidates: {type: array, items: {type: object, required: [project_id, name], properties: {project_id: {type: string, format: uuid}, name: {type: string}}}}
-        error_code: {type: [string, 'null'], description: 'e.g. ambiguous_route, unknown_runner, ambiguous_runner, policy_denied, policy_ambiguous, policy_scope_missing, policy_scope_ambiguous, policy_duration_missing'}
+        error_code: {type: [string, 'null'], description: 'e.g. ambiguous_route, unknown_runner, ambiguous_runner, policy_denied, policy_ambiguous, policy_scope_missing, policy_scope_ambiguous, policy_duration_missing, conversation_not_found, agent_unavailable'}
         progress: {oneOf: [{$ref: '#/components/schemas/RunProgress'}, {type: 'null'}]}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}

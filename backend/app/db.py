@@ -74,6 +74,7 @@ instructions = Table(
     Column("client_instruction_id", Uuid, nullable=False),
     Column("source", Text, nullable=False), Column("text", Text, nullable=False),
     Column("language", Text), Column("project_hint", Uuid), Column("runner_hint", Text),  # 003
+    Column("reply_to_run_id", Uuid),  # 006: continue that run's T3 conversation
     Column("transcription_metadata", Json, nullable=False, default=dict),
     Column("request_digest", String(64), nullable=False),
     Column("status", INSTRUCTION_STATUS, nullable=False, default="queued"), Column("intent", Text),

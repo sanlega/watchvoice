@@ -117,7 +117,7 @@ def create_app(database_url: str | None = None, rate_limit_per_minute: int = 20,
                 conn.execute(db.instructions.insert().values(
                     id=ins_id, user_id=dev.user_id, device_id=dev.id, client_instruction_id=body.client_instruction_id,
                     source=body.source, text=body.text, language=body.language, project_hint=body.project_hint,
-                    runner_hint=body.runner_hint,
+                    runner_hint=body.runner_hint, reply_to_run_id=body.reply_to_run_id,
                     transcription_metadata=body.transcription.model_dump(mode="json") | {"client": body.client.model_dump()},
                     request_digest=digest, status="queued", trace_id=trace_id, created_at=now, updated_at=now))
                 conn.execute(db.instruction_events.insert().values(instruction_id=ins_id, event_type="instruction.received",

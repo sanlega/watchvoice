@@ -26,6 +26,12 @@ struct DeliveryView: View {
 
                 if case .taskStarted(let instruction) = model.flow, let progress = instruction.progress {
                     RunProgressView(progress: progress)
+                    if let runId = instruction.agentRunId {
+                        Button { Task { await model.reply(to: runId) } } label: {
+                            Label("Responder", systemImage: "arrowshape.turn.up.left")
+                        }
+                        .accessibilityHint("Dicta una respuesta en la misma conversación")
+                    }
                     if let runId = instruction.agentRunId, !progress.runState.isTerminal {
                         StopRunButton(runId: runId)
                     }

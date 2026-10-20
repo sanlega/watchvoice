@@ -24,7 +24,9 @@ INTENTS = {
     "implement_feature": "The user asks to build, change, fix, review or research something in an existing project",
     "continue_task": "The user asks to resume or continue earlier work ('sigue con', 'retoma', 'lo de ayer')",
     "new_project": "The user asks to create or start a new project",
-    "capture_idea": "The user only wants an idea noted or saved, explicitly without executing anything",
+    "open_issue": "The user asks to open, file or create an issue or ticket in a project (an idea, a bug report)",
+    "analyze_bug": "The user asks to analyse, investigate or diagnose a bug or error, without asking to fix it yet",
+    "capture_idea": "The user wants an idea written down in their notes, explicitly without executing anything",
     "status_query": "The user asks what happened, the status or progress of work, without asking for new work",
     "unclear": "The instruction is not understandable as a request to a coding assistant",
 }

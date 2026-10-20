@@ -13,7 +13,9 @@ from datetime import datetime
 
 from .router import norm
 
-DEFAULT_GRANTS = frozenset({"repo.read", "repo.write_branch", "repo.open_pr", "ci.run", "shell.sandboxed"})
+# issues.write is default: "open an issue for this idea" is a core simple task (2026-10-20, Santi).
+DEFAULT_GRANTS = frozenset({"repo.read", "repo.write_branch", "repo.open_pr", "ci.run", "shell.sandboxed",
+                            "issues.write"})
 HIGH_RISK = frozenset({"deploy.production", "message.send", "secrets.write", "secrets.read_scoped",
                        "data.delete", "payment.send", "repo.write_protected", "repo.merge_protected",
                        "package.publish"})

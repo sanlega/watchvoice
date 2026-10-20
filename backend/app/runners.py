@@ -23,6 +23,7 @@ log = logging.getLogger("vox.runners")
 CALLBACK_TTL = timedelta(hours=24)
 DISPATCH_EVENT = "run.dispatch.v1"
 CANCEL_EVENT = "run.cancel.v1"
+MESSAGE_EVENT = "run.message.v1"  # follow-up into an existing T3 conversation
 CANCEL_TTL = timedelta(hours=1)
 RUN_DEADLINE = timedelta(hours=2)
 MAX_ATTEMPTS = 8  # shortcut: retried on every worker tick, no backoff; add next_attempt_at if relays flap
@@ -77,6 +78,16 @@ def enqueue_dispatch(conn, run_id, trace_id):
                                                   trace_id=trace_id, payload={"run_id": str(run_id)}))
 
 
+def enqueue_message(conn, run_id, trace_id):
+    conn.execute(db.outbox_events.insert().values(event_type=MESSAGE_EVENT, aggregate_id=run_id,
+                                                  trace_id=trace_id, payload={"run_id": str(run_id)}))
+
+
+def enqueue_start(conn, run, trace_id):
+    """A run starts a new T3 session, or continues the conversation it belongs to."""
+    (enqueue_message if run.external_ref else enqueue_dispatch)(conn, run.id, trace_id)
+
+
 def enqueue_cancel(conn, run, trace_id):
     """Only for runs already handed to a runner. Short expiry: a cancel held by the relay for a day must not
     land on whatever that machine runs later (ADR-0001 §8)."""
@@ -91,7 +102,8 @@ def build_payload(conn, run_id, base_url: str) -> tuple[dict, object, object]:
         select(db.agent_runs.c.id, db.agent_runs.c.task_id, db.agent_runs.c.runner_id, db.agent_runs.c.state,
                db.agent_runs.c.runtime_mode, db.agent_runs.c.user_id, db.agent_runs.c.agent,
                db.tasks.c.title, db.tasks.c.description, db.tasks.c.intent, db.tasks.c.execution_mode,
-               db.tasks.c.instruction_id, db.projects.c.name, db.projects.c.slug, db.projects.c.repo_url)
+               db.tasks.c.instruction_id, db.projects.c.name, db.projects.c.slug, db.projects.c.repo_url,
+               db.projects.c.context_json, db.agent_runs.c.external_ref)
         .join(db.tasks, db.tasks.c.id == db.agent_runs.c.task_id)
         .join(db.projects, db.projects.c.id == db.tasks.c.project_id)
         .where(db.agent_runs.c.id == run_id)).one()
@@ -99,8 +111,9 @@ def build_payload(conn, run_id, base_url: str) -> tuple[dict, object, object]:
     payload = {
         "vox": DISPATCH_EVENT, "run_id": str(row.id), "task_id": str(row.task_id),
         "instruction_id": str(row.instruction_id) if row.instruction_id else None,
-        "project": {"name": row.name, "slug": row.slug, "repo_url": row.repo_url},
-        "title": row.title, "intent": row.intent, "execution_mode": row.execution_mode,
+        "project": {"name": row.name, "slug": row.slug, "repo_url": row.repo_url,
+                    "create": bool((row.context_json or {}).get("create_on_runner"))},
+        "title": row.title, "intent": row.intent, "task_kind": row.intent, "execution_mode": row.execution_mode,
         "runtime_mode": row.runtime_mode or "auto",
         "agent": row.agent or {"key": "", "provider": "", "model": ""},  # empty = T3 default model
         "text": row.description,  # untrusted user dictation: the dispatcher prompt fences it as data
@@ -109,6 +122,11 @@ def build_payload(conn, run_id, base_url: str) -> tuple[dict, object, object]:
                      "token": callback_token(row.id)},
         "sent_at": db.now().isoformat(),
     }
+    if row.external_ref:  # follow-up: only the new message, sent into the existing thread
+        text = conn.execute(select(db.instructions.c.text).where(db.instructions.c.agent_run_id == row.id)).scalar()
+        payload = {"vox": MESSAGE_EVENT, "run_id": payload["run_id"], "external_ref": row.external_ref,
+                   "project": payload["project"], "text": text or "", "callback": payload["callback"],
+                   "expires_at": (db.now() + CANCEL_TTL).isoformat(), "sent_at": payload["sent_at"]}
     return payload, runner, row
 
 
@@ -139,13 +157,13 @@ def deliver_dispatches(engine, post, base_url: str | None = None, limit: int = 5
     delivered = 0
     with engine.connect() as conn:
         pending = conn.execute(select(db.outbox_events).where(
-            db.outbox_events.c.event_type.in_([DISPATCH_EVENT, CANCEL_EVENT]),
+            db.outbox_events.c.event_type.in_([DISPATCH_EVENT, MESSAGE_EVENT, CANCEL_EVENT]),
             db.outbox_events.c.published_at.is_(None),
             db.outbox_events.c.attempts < MAX_ATTEMPTS).order_by(db.outbox_events.c.created_at).limit(limit)).all()
     for ev in pending:
         with engine.begin() as conn:
             now = db.now()
-            if ev.event_type == DISPATCH_EVENT:
+            if ev.event_type in (DISPATCH_EVENT, MESSAGE_EVENT):
                 payload, runner, run = build_payload(conn, ev.aggregate_id, base_url)
                 if run.state != "queued":  # cancelled or paused-and-cancelled before delivery
                     conn.execute(update(db.outbox_events).where(db.outbox_events.c.id == ev.id)
@@ -168,7 +186,12 @@ def deliver_dispatches(engine, post, base_url: str | None = None, limit: int = 5
             values = {"attempts": ev.attempts + 1, "last_error": error}
             if error is None:
                 values["published_at"] = now
-                if ev.event_type == DISPATCH_EVENT:
+                if ev.event_type == MESSAGE_EVENT:  # earlier attempts in that thread are superseded
+                    conn.execute(update(db.agent_runs).where(
+                        db.agent_runs.c.external_ref == run.external_ref, db.agent_runs.c.id != run.id,
+                        db.agent_runs.c.state.in_(["provisioning", "running"])).values(
+                        state="cancelled", summary="Continúa en la respuesta siguiente"))
+                if ev.event_type in (DISPATCH_EVENT, MESSAGE_EVENT):
                     conn.execute(update(db.agent_runs).where(db.agent_runs.c.id == ev.aggregate_id,
                                                              db.agent_runs.c.state == "queued")
                                  .values(state="provisioning", last_event_at=now, deadline_at=now + RUN_DEADLINE,
