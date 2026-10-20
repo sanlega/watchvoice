@@ -68,6 +68,7 @@ class Instruction(BaseModel):
 
 class RunProgress(BaseModel):
     runner: str | None
+    agent: str | None = None  # key of the coding agent, e.g. "claude", "codex"
     run_state: str
     summary: str | None
     pr_url: str | None

@@ -48,13 +48,17 @@ def runner_names(r) -> list[str]:
     return [r.name, *(r.aliases or [])]
 
 
-def select_runner(conn, user_id, text: str, hint: str | None, project_context: dict | None):
-    """Returns (runner_row | None, error_code | None). Order: hint > text > project default > user default."""
+def select_runner(conn, user_id, text: str, hint: str | None, project_context: dict | None,
+                  named: str | None = None):
+    """Returns (runner_row | None, error_code | None).
+    Order: watch hint > machine named by the model (Jev) > name in the text > project default > user default."""
     runners = conn.execute(select(db.runners).where(db.runners.c.user_id == user_id,
                                                     db.runners.c.enabled.is_(True))).all()
     by_name = {norm(n): r for r in runners for n in runner_names(r)}
     if hint:
         return (by_name[norm(hint)], None) if norm(hint) in by_name else (None, "unknown_runner")
+    if named:
+        return (by_name[norm(named)], None) if norm(named) in by_name else (None, "unknown_runner")
     t = norm(text)
     mentioned = {r.id: r for n, r in by_name.items()
                  if re.search(rf"\b(en|desde|con|on)\s+(el |la |mi |my |the )?{re.escape(n)}\b", t)}
@@ -85,7 +89,7 @@ def enqueue_cancel(conn, run, trace_id):
 def build_payload(conn, run_id, base_url: str) -> tuple[dict, object, object]:
     row = conn.execute(
         select(db.agent_runs.c.id, db.agent_runs.c.task_id, db.agent_runs.c.runner_id, db.agent_runs.c.state,
-               db.agent_runs.c.runtime_mode, db.agent_runs.c.user_id,
+               db.agent_runs.c.runtime_mode, db.agent_runs.c.user_id, db.agent_runs.c.agent,
                db.tasks.c.title, db.tasks.c.description, db.tasks.c.intent, db.tasks.c.execution_mode,
                db.tasks.c.instruction_id, db.projects.c.name, db.projects.c.slug, db.projects.c.repo_url)
         .join(db.tasks, db.tasks.c.id == db.agent_runs.c.task_id)
@@ -98,6 +102,7 @@ def build_payload(conn, run_id, base_url: str) -> tuple[dict, object, object]:
         "project": {"name": row.name, "slug": row.slug, "repo_url": row.repo_url},
         "title": row.title, "intent": row.intent, "execution_mode": row.execution_mode,
         "runtime_mode": row.runtime_mode or "auto",
+        "agent": row.agent or {"key": "", "provider": "", "model": ""},  # empty = T3 default model
         "text": row.description,  # untrusted user dictation: the dispatcher prompt fences it as data
         "callback": {"url": f"{base_url.rstrip('/')}/v1/runs/{row.id}/events",
                      "approvals_url": f"{base_url.rstrip('/')}/v1/runs/{row.id}/approval-requests",

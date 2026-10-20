@@ -16,6 +16,7 @@ from . import db, notify, policy_voice
 from .notify import APPROVAL_TTL
 from .policy import evaluate, requested_capabilities
 from .router import HybridRouter, ProjectRef, norm
+from .router_jev import agent_for, jev_from_env, runner_refs
 from .runners import enqueue_dispatch, select_runner
 
 log = logging.getLogger("vox.processor")
@@ -112,8 +113,9 @@ def handle_policy_change(conn, ins, change, now) -> dict:
     return {"status": "awaiting_approval", "approval_id": approval_id}
 
 
-def process_instruction(engine, instruction_id, router: HybridRouter | None = None) -> str | None:
+def process_instruction(engine, instruction_id, router: HybridRouter | None = None, jev=None) -> str | None:
     router = router or HybridRouter()
+    jev = jev if jev is not None else jev_from_env()
     with engine.begin() as conn:
         q = select(db.instructions).where(db.instructions.c.id == instruction_id)
         if conn.dialect.name == "postgresql":
@@ -134,7 +136,14 @@ def process_instruction(engine, instruction_id, router: HybridRouter | None = No
             else:
                 values |= handle_policy_change(conn, ins, change, now)
         else:
-            values |= route_and_dispatch(conn, ins, router.route(ins.text, projects, ins.project_hint), now)
+            decision = None
+            if jev and ins.project_hint is None:
+                try:
+                    decision = jev.decide(ins.text, projects, runner_refs(runner_list))
+                except Exception as exc:  # model/API down: the deterministic rules are the safe fallback
+                    log.warning("jev_failed", extra={"instruction_id": str(ins.id), "code": type(exc).__name__})
+            route = decision.route if decision else router.route(ins.text, projects, ins.project_hint)
+            values |= route_and_dispatch(conn, ins, route, now, decision)
             reason = values.pop("_reason")
 
         conn.execute(update(db.instructions).where(db.instructions.c.id == ins.id).values(**values))
@@ -150,7 +159,7 @@ def process_instruction(engine, instruction_id, router: HybridRouter | None = No
     return values["status"]
 
 
-def route_and_dispatch(conn, ins, route, now) -> dict:
+def route_and_dispatch(conn, ins, route, now, jev_decision=None) -> dict:
     values = {"intent": route.intent, "_reason": route.reason}
     conn.execute(db.routing_decisions.insert().values(
         instruction_id=ins.id, user_id=ins.user_id, project_id=route.project_id, intent=route.intent,
@@ -163,10 +172,15 @@ def route_and_dispatch(conn, ins, route, now) -> dict:
                          "candidates": [{"project_id": str(c.id), "name": c.name} for c in route.candidates]}
     if route.intent == "capture_idea":
         return values | {"status": "captured", "project_id": route.project_id}
-    runner, runner_error = select_runner(conn, ins.user_id, ins.text, ins.runner_hint,
-                                         project_context(conn, route.project_id))
-    if runner_error:
-        return values | {"status": "needs_clarification", "error_code": runner_error}
+    runner_error = jev_decision.runner_error if jev_decision and not ins.runner_hint else None
+    runner = None
+    if not runner_error:
+        runner, runner_error = select_runner(conn, ins.user_id, ins.text, ins.runner_hint,
+                                             project_context(conn, route.project_id),
+                                             named=jev_decision.runner_name if jev_decision else None)
+    agent, agent_error = agent_for(runner, jev_decision.agent_key if jev_decision else None) if runner         else (None, None)
+    if runner_error or agent_error:
+        return values | {"status": "needs_clarification", "error_code": runner_error or agent_error}
 
     project_id = route.project_id
     decision = evaluate(requested_capabilities(ins.text), load_rules(conn, ins.user_id),
@@ -192,7 +206,7 @@ def route_and_dispatch(conn, ins, route, now) -> dict:
     conn.execute(db.agent_runs.insert().values(
         id=run_id, user_id=ins.user_id, task_id=task_id, attempt=1,
         executor=f"t3code:{runner.name}" if runner else "unassigned", runner_id=runner.id if runner else None,
-        runtime_mode=decision.runtime_mode, summary=None if runner else "Sin máquina asignada",
+        runtime_mode=decision.runtime_mode, agent=agent, summary=None if runner else "Sin máquina asignada",
         state="waiting_approval" if gated else "queued"))
     if runner and not gated:
         enqueue_dispatch(conn, run_id, ins.trace_id)

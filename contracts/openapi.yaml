@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: VOX Agent API
-  version: 0.4.0
+  version: 0.5.0
   description: >-
     Self-hosted voice-to-project-agent API. Mutations are idempotent.
     v0.3.0 is purely additive over v0.2.0: transcript-first `/instructions` for the
@@ -9,6 +9,8 @@ info:
     `challenge_token` on approval decisions. All v0.2.0 operations are unchanged.
     v0.4.0 (ADR-0001): policy rules, device-signed approvals (replaces the unreleased
     challenge_token), pairing, push registration, agent approval requests, signed cancel, pause.
+    v0.5.0: routing by a language model (TypeSafe Jev) selects project, machine and coding agent;
+    RunProgress.agent.
 servers:
   - url: https://vox.example.invalid/v1
 security:
@@ -449,6 +451,7 @@ components:
       required: [runner, run_state, summary, pr_url, updated_at]
       properties:
         runner: {type: [string, 'null']}
+        agent: {type: [string, 'null'], description: 'v0.5: coding agent key chosen by the router (e.g. claude, codex)'}
         run_state: {type: string, enum: [queued, provisioning, running, waiting_approval, succeeded, failed, cancelled, timed_out]}
         summary: {type: [string, 'null'], description: 'Agent-written, untrusted display text'}
         pr_url: {type: [string, 'null'], format: uri}

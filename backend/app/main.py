@@ -151,7 +151,8 @@ def create_app(database_url: str | None = None, rate_limit_per_minute: int = 20,
             run = conn.execute(select(db.agent_runs, db.runners.c.name.label("runner_name"))
                                .outerjoin(db.runners, db.runners.c.id == db.agent_runs.c.runner_id)
                                .where(db.agent_runs.c.id == ins.agent_run_id)).first() if ins.agent_run_id else None
-        progress = RunProgress(runner=run.runner_name, run_state=run.state, summary=run.summary,
+        progress = RunProgress(runner=run.runner_name, agent=(run.agent or {}).get("key"), run_state=run.state,
+                               summary=run.summary,
                                pr_url=run.external_pr_url, updated_at=aware(run.last_event_at)) if run else None
         return Instruction(**{k: getattr(ins, k) for k in Instruction.model_fields
                               if k not in {"created_at", "updated_at", "progress"}},

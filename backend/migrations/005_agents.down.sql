@@ -1,0 +1,4 @@
+BEGIN;
+ALTER TABLE agent_runs DROP COLUMN agent;
+ALTER TABLE runners DROP COLUMN agents;
+COMMIT;

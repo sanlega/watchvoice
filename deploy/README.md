@@ -14,6 +14,7 @@ Lo hace el bot del VPS siguiendo estos pasos. Las operaciones de administración
      VOX_CALLBACK_SECRET=<64 hex>
      VOX_RUNNER_SECRET_PC=<igual al del webhook de T3 del PC>
      VOX_RUNNER_SECRET_VPS=<igual al del webhook de T3 del VPS>
+     TYPESAFE_API_KEY=<clave de console.typesafe.ai>   # router Jev (ADR-0002); sin ella, reglas deterministas
      # Push (requiere Apple Developer Program de pago):
      VOX_APNS_TEAM_ID=...  VOX_APNS_KEY_ID=...  VOX_APNS_TOPIC=<bundle id de la app del reloj>
      VOX_APNS_KEY_PATH=/run/apns/AuthKey.p8
@@ -37,7 +38,7 @@ Rollback: `VOX_TAG=<tag anterior> docker compose up -d api worker`. Las migracio
 ```sh
 docker compose exec api python -m app.admin user-add --email santilega@gmail.com
 docker compose exec api python -m app.admin runner-add --email santilega@gmail.com --name pc --alias "mi pc" \
-  --webhook-url "<webhookUrl del T3 del PC>" --secret-env VOX_RUNNER_SECRET_PC --trust cooperative
+  --webhook-url "<webhookUrl del T3 del PC>" --secret-env VOX_RUNNER_SECRET_PC --trust cooperative   --agent claude=claudeAgent:claude-opus-5-5:Claude --agent codex=codex:gpt-6.1-sol:Codex
 docker compose exec api python -m app.admin runner-add --email santilega@gmail.com --name vps --alias servidor \
   --webhook-url "<webhookUrl del T3 del VPS>" --secret-env VOX_RUNNER_SECRET_VPS --default
 docker compose exec api python -m app.admin pair --email santilega@gmail.com --name "Apple Watch"

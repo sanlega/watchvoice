@@ -127,6 +127,8 @@ runners = Table(  # 003: machines running T3 Code (VPS, PC, Mac) reachable throu
     Column("is_default", Boolean, nullable=False, default=False),
     Column("enabled", Boolean, nullable=False, default=True),
     Column("trust", Text, nullable=False, default="isolated"),  # 004: isolated | cooperative
+    # 005: coding agents available in this machine's T3: [{key, provider, model, description}]; first = default
+    Column("agents", JSON, nullable=False, default=list),
     ts("created_at", nullable=False, default=now), UniqueConstraint("user_id", "name"))
 
 agent_runs = Table(
@@ -140,6 +142,7 @@ agent_runs = Table(
     ts("callback_expires_at"), Column("summary", Text), Column("external_ref", Text), ts("last_event_at"),
     # 004: runtime mode chosen by policy, deadline and stale notice
     Column("runtime_mode", Text), ts("deadline_at"), ts("stale_notified_at"),
+    Column("agent", Json),  # 005: {key, provider, model} chosen for this run, or NULL = T3 default
     ts("created_at", nullable=False, default=now), UniqueConstraint("task_id", "attempt"))
 
 capability_grants = Table(

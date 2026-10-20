@@ -16,6 +16,7 @@ project name: {{body.project.name}} (slug {{body.project.slug}})
 title: {{body.title}}
 intent: {{body.intent}}
 runtime mode decided by VOX policy: {{body.runtime_mode}}
+coding agent chosen by VOX: provider "{{body.agent.provider}}", model "{{body.agent.model}}" (empty = this machine's default)
 callback url: {{body.callback.url}}
 callback token: {{body.callback.token}}
 approval requests url: {{body.callback.approvals_url}}
@@ -29,7 +30,10 @@ Steps, in order:
    If none matches, report failure and stop:
    curl -fsS -X POST "{{body.callback.url}}" -H "Authorization: Bearer {{body.callback.token}}" -H "Content-Type: application/json" -d '{"event":"failed","summary":"Proyecto no encontrado en esta máquina"}'
 3. Launch ONE top-level thread with t3_thread_launch in that project with runtimeMode "{{body.runtime_mode}}"
-   (if that value is not one of approval-required, auto-accept-edits, auto, full-access, use "auto"), workspaceStrategy
+   (if that value is not one of approval-required, auto-accept-edits, auto, full-access, use "auto"),
+   modelSelection {"instanceId":"{{body.agent.provider}}","model":"{{body.agent.model}}"} when the provider is not empty
+   (if that provider/model is not available on this machine, report failed "Agente no disponible en esta máquina" and stop),
+   workspaceStrategy
    {"type":"worktree","baseRef":"<the project's default branch, e.g. main or master>","branch":"vox/{{body.run_id}}","startFromOrigin":true}
    (if the project is not a git repository, report failed "Proyecto sin git" and stop), title "vox-run {{body.run_id}}: {{body.title}}",
    and a message that contains: the <untrusted> block verbatim, the WORKER RULES below, and the REPORTING instructions below.

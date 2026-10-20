@@ -51,6 +51,9 @@ def main(argv=None):
             p.add_argument("--alias", action="append", default=[])
             p.add_argument("--default", action="store_true")
             p.add_argument("--trust", choices=["isolated", "cooperative"], default="isolated")
+            p.add_argument("--agent", action="append", default=[],
+                           help="key=provider:model[:description], e.g. claude=claudeAgent:claude-opus-5-5:Claude; "
+                                "first one is the default")
         if name == "rule-add":
             p.add_argument("--runner")
             p.add_argument("--project")
@@ -84,7 +87,12 @@ def main(argv=None):
             if args.default:
                 conn.execute(update(db.runners).where(db.runners.c.user_id == uid).values(is_default=False))
             rid = uuid.uuid4()
-            conn.execute(db.runners.insert().values(id=rid, user_id=uid, name=args.name, aliases=args.alias,
+            agents = []
+            for spec in args.agent:
+                key, rest = spec.split("=", 1)
+                provider, model, *desc = rest.split(":", 2)
+                agents.append({"key": key, "provider": provider, "model": model, "description": desc[0] if desc else key})
+            conn.execute(db.runners.insert().values(id=rid, user_id=uid, name=args.name, aliases=args.alias, agents=agents,
                                                     webhook_url=args.webhook_url, secret_env=args.secret_env,
                                                     is_default=args.default, trust=args.trust))
             _audit(conn, uid, "runner.added", "runner", rid, {"name": args.name, "trust": args.trust})
