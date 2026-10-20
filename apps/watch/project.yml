@@ -25,9 +25,29 @@ settings:
   base:
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
-    # App bundle id; the widget extension id is derived from it.
-    VOX_APP_BUNDLE_ID: app.vox.watch
+    # Root (App Store Connect) bundle id of the iOS stub; the watch app and widget ids derive from it.
+    VOX_APP_BUNDLE_ID: com.santilega.vox
+schemes:
+  # Archived by fastlane (apps/watch/fastlane): the stub wraps the watch app for App Store upload.
+  VOX:
+    build:
+      targets:
+        VOX: all
 targets:
+  # Stub iOS wrapper of the watch-only app (no iOS executable; nothing installs on the iPhone).
+  # Apple: Xcode needs it to set the root bundle id and to package the app for the App Store.
+  VOX:
+    type: application.watchapp2-container
+    platform: iOS
+    deploymentTarget: "17.0"
+    dependencies:
+      - target: VoxWatch
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(VOX_APP_BUNDLE_ID)
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: VOX
+
   # Same sources as the VoxWatchCore Swift package (used on macOS for `swift test`).
   # Built here as a framework so the Whistle configs can apply VOX_WHISTLE + the needle link settings.
   VoxWatchCore:
@@ -81,7 +101,9 @@ targets:
           enabled: 1
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: $(VOX_APP_BUNDLE_ID)
+        PRODUCT_BUNDLE_IDENTIFIER: $(VOX_APP_BUNDLE_ID).watchkitapp
+        # Archived inside the VOX stub, not as a top-level product.
+        SKIP_INSTALL: YES
         SWIFT_VERSION: "5.0"
         SWIFT_STRICT_CONCURRENCY: complete
         # The model-embed script below reads Vendor/ outside the declared inputs.
@@ -123,6 +145,6 @@ targets:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: $(VOX_APP_BUNDLE_ID).widgets
+        PRODUCT_BUNDLE_IDENTIFIER: $(VOX_APP_BUNDLE_ID).watchkitapp.widgets
         SWIFT_VERSION: "5.0"
         SWIFT_STRICT_CONCURRENCY: complete

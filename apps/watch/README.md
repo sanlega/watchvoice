@@ -43,7 +43,7 @@ Approvals, "Parar" (cancel run) and "Pausar todo" are signed with that key over 
 ## Push notifications
 
 - Needs a **paid Apple Developer Program** membership: free teams cannot sign the `aps-environment` entitlement (set in `project.yml`, generated into `VoxWatch/VoxWatch.entitlements`).
-- The backend needs an APNs auth key: `VOX_APNS_KEY_PATH` (.p8), `VOX_APNS_KEY_ID`, `VOX_APNS_TEAM_ID`, `VOX_APNS_TOPIC=app.vox.watch`; the watch only sends its token to `PUT /v1/devices/me/push-token` (`development` in Debug, `production` in Release).
+- The backend needs an APNs auth key: `VOX_APNS_KEY_PATH` (.p8), `VOX_APNS_KEY_ID`, `VOX_APNS_TEAM_ID`, `VOX_APNS_TOPIC=com.santilega.vox.watchkitapp`; the watch only sends its token to `PUT /v1/devices/me/push-token` (`development` in Debug, `production` in Release).
 - Categories: `VOX_APPROVAL_LOW` [Aprobar (first, so Double Tap approves), Rechazar] and `VOX_APPROVAL_HIGH` [Revisar, opens the app]. Aprobar/Rechazar run in the background and make exactly one signed call; on failure the watch posts a local "No se pudo aprobar, toca para reintentar" notification.
 
 ## Enable Whistle (experimental, on-device ASR)
@@ -57,6 +57,12 @@ Approvals, "Parar" (cancel run) and "Pausar todo" are signed with that key over 
 3. They need a physical watch running watchOS 26.2 or later. `libneedle.a` has no simulator slice, so the simulator cannot link it.
 
 Without `VOX_WHISTLE`, `WhistleTranscriber` is a stub. It reports `blocked` and never returns text, so the app falls back to system dictation (a `TextField`, sent as engine `system_dictation`). Remote audio ASR exists only as a consent flag (default OFF) and a `RemoteTranscriber` stub that throws `notImplemented`.
+
+## TestFlight
+
+Push a `v*` tag (e.g. `v0.2.0`, which becomes the version) or run the `watch-testflight` workflow by hand. It runs `bundle exec fastlane ios beta` from `apps/watch`: registers missing App IDs, signs with fastlane match (encrypted in musiquillas' private `certificates` branch, reached with `MATCH_DEPLOY_KEY`), archives the `VOX` scheme and uploads an internal TestFlight build numbered with the UTC timestamp.
+
+Bundle ids: `com.santilega.vox` (the iOS stub Xcode requires for a watch-only app; this is the App Store Connect app), `com.santilega.vox.watchkitapp` (the watch app) and `com.santilega.vox.watchkitapp.widgets`. The App Store Connect API cannot create app records, so the `com.santilega.vox` app must be added once by hand in App Store Connect.
 
 ## Privacy
 

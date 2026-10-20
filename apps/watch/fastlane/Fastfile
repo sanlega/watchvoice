@@ -1,0 +1,99 @@
+require "securerandom"
+
+default_platform(:ios)
+
+# Watch-only app: an iOS stub (VOX, the App Store Connect bundle id) wraps the watch app and its widgets.
+ROOT_ID = "com.santilega.vox"
+TARGETS = {
+  ROOT_ID => "VOX",
+  "#{ROOT_ID}.watchkitapp" => "VoxWatch",
+  "#{ROOT_ID}.watchkitapp.widgets" => "VoxWidgets"
+}
+
+platform :ios do
+  desc "Sign, build and upload an internal TestFlight build of the watch app"
+  lane :beta do
+    team_id = ENV.fetch("APPLE_TEAM_ID")
+    build_number = ENV.fetch("BUILD_NUMBER")
+
+    api_key = app_store_connect_api_key(
+      key_id: ENV.fetch("ASC_KEY_ID"),
+      issuer_id: ENV.fetch("ASC_ISSUER_ID"),
+      key_content: ENV.fetch("ASC_API_KEY"),
+      is_key_content_base64: false
+    )
+
+    # match does not register App IDs; create the missing ones (push is needed by the watch app, ADR-0001 §6).
+    TARGETS.each_key do |id|
+      bundle_id = Spaceship::ConnectAPI::BundleId.find(id) ||
+                  Spaceship::ConnectAPI::BundleId.create(name: "VOX #{id}".tr(".", " "), identifier: id, platform: "IOS")
+      next unless id.end_with?(".watchkitapp")
+      push = Spaceship::ConnectAPI::BundleIdCapability::Type::PUSH_NOTIFICATIONS
+      bundle_id.create_capability(push) unless bundle_id.get_capabilities.any? { |c| c.capability_type == push }
+    end
+
+    keychain_password = SecureRandom.hex(32)
+    create_keychain(
+      name: "vox_ci",
+      password: keychain_password,
+      default_keychain: true,
+      unlock: true,
+      timeout: 3600
+    )
+
+    # This repo is public, so certificates live encrypted in musiquillas' private "certificates" branch
+    # (same team, so the distribution certificate is shared). CI reaches it with a deploy key over SSH.
+    match(
+      type: "appstore",
+      app_identifier: TARGETS.keys,
+      api_key: api_key,
+      team_id: team_id,
+      storage_mode: "git",
+      git_url: "git@github.com:sanlega/musiquillas.git",
+      git_branch: "certificates",
+      git_full_name: "VOX CI",
+      git_user_email: "ci@users.noreply.github.com",
+      keychain_name: "vox_ci",
+      keychain_password: keychain_password,
+      readonly: false,
+      force: ENV["FORCE_PROFILE"].to_s == "true"
+    )
+
+    signing = { use_automatic_signing: false, path: "VoxWatch.xcodeproj", build_configurations: ["Release"],
+                team_id: team_id, code_sign_identity: "Apple Distribution" }
+    TARGETS.each do |id, target|
+      update_code_signing_settings(**signing, targets: [target], profile_name: "match AppStore #{id}")
+    end
+    update_code_signing_settings(**signing, targets: ["VoxWatchCore"]) # framework: identity only, no profile
+
+    ipa = build_app(
+      project: "VoxWatch.xcodeproj",
+      scheme: "VOX",
+      configuration: "Release",
+      clean: true,
+      export_method: "app-store",
+      export_team_id: team_id,
+      export_options: {
+        signingStyle: "manual",
+        provisioningProfiles: TARGETS.keys.to_h { |id| [id, "match AppStore #{id}"] }
+      },
+      # A v1.2.3 tag sets the version testers see; otherwise project.yml's MARKETING_VERSION is used.
+      xcargs: ["CURRENT_PROJECT_VERSION=#{build_number}", ENV["MARKETING_VERSION"].to_s.empty? ? nil : "MARKETING_VERSION=#{ENV['MARKETING_VERSION']}"].compact.join(" ")
+    )
+
+    # The App Store Connect API cannot create app records; a human adds it once in the web UI.
+    unless Spaceship::ConnectAPI::App.find(ROOT_ID)
+      UI.user_error!("No App Store Connect app for #{ROOT_ID}. Create it: App Store Connect > Apps > + > New App " \
+                     "(platform iOS, bundle id #{ROOT_ID}), then re-run. The signed IPA is in the workflow artifacts.")
+    end
+
+    upload_to_testflight(
+      api_key: api_key,
+      app_identifier: ROOT_ID,
+      ipa: ipa,
+      skip_waiting_for_build_processing: false,
+      distribute_external: false,
+      changelog: ENV.fetch("TESTFLIGHT_CHANGELOG", "").empty? ? "VOX build #{build_number}" : ENV["TESTFLIGHT_CHANGELOG"]
+    )
+  end
+end
