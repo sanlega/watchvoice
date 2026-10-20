@@ -14,6 +14,8 @@ options:
   deploymentTarget:
     watchOS: "10.0"
   createIntermediateGroups: true
+  # Spanish UI; also the language the App Shortcut phrases are written in.
+  developmentLanguage: es
 configs:
   Debug: debug
   Release: release
@@ -23,6 +25,8 @@ settings:
   base:
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
+    # App bundle id; the widget extension id is derived from it.
+    VOX_APP_BUNDLE_ID: app.vox.watch
 targets:
   # Same sources as the VoxWatchCore Swift package (used on macOS for `swift test`).
   # Built here as a framework so the Whistle configs can apply VOX_WHISTLE + the needle link settings.
@@ -54,6 +58,7 @@ targets:
       - path: VoxWatch
     dependencies:
       - target: VoxWatchCore
+      - target: VoxWidgets
     info:
       path: VoxWatch/Info.plist
       properties:
@@ -76,7 +81,7 @@ targets:
           enabled: 1
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: app.vox.watch
+        PRODUCT_BUNDLE_IDENTIFIER: $(VOX_APP_BUNDLE_ID)
         SWIFT_VERSION: "5.0"
         SWIFT_STRICT_CONCURRENCY: complete
         # The model-embed script below reads Vendor/ outside the declared inputs.
@@ -101,3 +106,23 @@ targets:
               cp "$MODEL" "${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/whistle.cact"
               ;;
           esac
+
+  # Watch face complication ("Dictar a VOX"), embedded in the app.
+  VoxWidgets:
+    type: app-extension
+    platform: watchOS
+    sources:
+      - path: VoxWidgets
+    info:
+      path: VoxWidgets/Info.plist
+      properties:
+        CFBundleDisplayName: VOX
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(VOX_APP_BUNDLE_ID).widgets
+        SWIFT_VERSION: "5.0"
+        SWIFT_STRICT_CONCURRENCY: complete

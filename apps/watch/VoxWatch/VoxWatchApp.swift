@@ -17,6 +17,11 @@ struct VoxWatchApp: App {
                     guard scenePhase == .active else { return }
                     await model.foregroundLoop()
                 }
+                // Complication tap (VoxWidgets): straight into recording.
+                .onOpenURL { url in
+                    guard url.scheme == "vox", url.host == "record" else { return }
+                    Task { await model.speakTapped() }
+                }
         }
     }
 }
