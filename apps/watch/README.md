@@ -5,7 +5,8 @@ An independent watchOS app (no iOS companion). You speak or dictate an instructi
 ## Layout
 
 - `VoxWatchCore/`: a Swift package with all non-UI logic (models, API client, Keychain, outbox, delivery, state machine, ASR selection, Whistle wrapper). The Xcode project also builds these same sources as a watchOS framework.
-- `VoxWatch/`: the SwiftUI app (views, `AppModel`, `AVAudioEngineCapture`).
+- `VoxWatch/`: the SwiftUI app (views, `AppModel`, `AVAudioEngineCapture`, the "Dictar a VOX" App Intent and Siri/Atajos phrases).
+- `VoxWidgets/`: the watch face complication. A tap opens `vox://record`, which starts recording.
 - `CNeedle/module.modulemap`: exposes `needle.h` to Swift. Only the Whistle configs use it.
 - `scripts/fetch-needle.sh`: downloads `needle.h`, `libneedle.a` and `whistle.cact` into `Vendor/needle/`, which is gitignored.
 
