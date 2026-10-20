@@ -132,6 +132,13 @@ runners = Table(  # 003: machines running T3 Code (VPS, PC, Mac) reachable throu
     Column("agents", JSON, nullable=False, default=list),
     ts("created_at", nullable=False, default=now), UniqueConstraint("user_id", "name"))
 
+project_runners = Table(  # 007: projects each runner reported in its last sync
+    "project_runners", metadata,
+    Column("project_id", Uuid, ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True),
+    Column("runner_id", Uuid, ForeignKey("runners.id", ondelete="CASCADE"), primary_key=True),
+    Column("folder", Text, nullable=False), Column("has_git", Boolean, nullable=False),
+    Column("has_origin", Boolean, nullable=False), ts("seen_at", nullable=False, default=now))
+
 agent_runs = Table(
     "agent_runs", metadata, pk(),
     Column("user_id", Uuid, ForeignKey("users.id"), nullable=False),

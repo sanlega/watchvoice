@@ -194,14 +194,15 @@ def test_openapi_contract_matches_pydantic_models():
     import yaml
     spec = yaml.safe_load((FIXTURES.parent / "openapi.yaml").read_text("utf-8"))
     schemas = spec["components"]["schemas"]
-    assert spec["info"]["version"] == "0.8.0"
+    assert spec["info"]["version"] == "0.9.0"
     from app import schemas as S
     for name, model in [("NewInstruction", NewInstruction), ("Instruction", Instruction),
                         ("InstructionReceipt", InstructionReceipt), ("Approval", S.Approval),
                         ("ApprovalDecision", S.ApprovalDecision), ("PauseIn", S.PauseIn), ("PairIn", S.PairIn),
                         ("PushTokenIn", S.PushTokenIn), ("AgentApprovalIn", S.AgentApprovalIn),
                         ("AgentApprovalOut", S.AgentApprovalOut), ("PolicyRuleOut", S.PolicyRuleOut),
-                        ("RunEventIn", S.RunEventIn), ("RunProgress", S.RunProgress), ("SignedBody", S.SignedBody)]:
+                        ("RunEventIn", S.RunEventIn), ("RunProgress", S.RunProgress), ("SignedBody", S.SignedBody),
+                        ("RunnerProject", S.RunnerProject), ("RunnerProjectsIn", S.RunnerProjectsIn)]:
         assert set(schemas[name]["properties"]) == set(model.model_fields), name
     assert set(schemas["NewInstruction"]["required"]) == {k for k, f in NewInstruction.model_fields.items() if f.is_required()}
     from app.schemas import InstructionStatus

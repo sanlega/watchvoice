@@ -186,7 +186,8 @@ def route_and_dispatch(conn, ins, route, now, jev_decision=None) -> dict:
     if not runner_error:
         runner, runner_error = select_runner(conn, ins.user_id, ins.text, ins.runner_hint,
                                              project_context(conn, route.project_id),
-                                             named=jev_decision.runner_name if jev_decision else None)
+                                             named=jev_decision.runner_name if jev_decision else None,
+                                             project_id=route.project_id)
     agent, agent_error = (agent_for(runner, jev_decision.agent_key if jev_decision else None) if runner
                           else (None, None))
     if runner_error or agent_error:

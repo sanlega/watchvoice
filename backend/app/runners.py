@@ -12,7 +12,9 @@ import json
 import logging
 import os
 import re
-from datetime import timedelta
+import uuid
+from datetime import datetime, timedelta, timezone
+from urllib.parse import quote
 
 from sqlalchemy import select, update
 
@@ -24,6 +26,8 @@ CALLBACK_TTL = timedelta(hours=24)
 DISPATCH_EVENT = "run.dispatch.v1"
 CANCEL_EVENT = "run.cancel.v1"
 MESSAGE_EVENT = "run.message.v1"  # follow-up into an existing T3 conversation
+SYNC_EVENT = "runner.sync.v1"  # ask the machine to report its T3 projects
+SYNC_TTL = timedelta(hours=24)  # the relay may hold a delivery up to 24 h while the machine is off
 CANCEL_TTL = timedelta(hours=1)
 RUN_DEADLINE = timedelta(hours=2)
 MAX_ATTEMPTS = 8  # shortcut: retried on every worker tick, no backoff; add next_attempt_at if relays flap
@@ -45,14 +49,29 @@ def verify_callback_token(run_id, token: str) -> bool:
     return hmac.compare_digest(callback_token(run_id), token or "")
 
 
+def sync_token(runner_id, expires_at) -> str:
+    """Bearer for POST /v1/runners/{name}/projects: "<exp>.<HMAC(VOX_CALLBACK_SECRET, sync:<runner_id>:<exp>)>".
+    The expiry is inside the MAC, so the launcher never needs the runner's webhook secret."""
+    exp = int(expires_at.timestamp())
+    return f"{exp}." + hmac.new(callback_secret(), f"sync:{runner_id}:{exp}".encode(), hashlib.sha256).hexdigest()
+
+
+def verify_sync_token(runner_id, token: str, now) -> bool:
+    exp, _, _ = (token or "").partition(".")
+    if not exp.isdigit() or int(exp) <= now.timestamp():
+        return False
+    return hmac.compare_digest(sync_token(runner_id, datetime.fromtimestamp(int(exp), timezone.utc)), token)
+
+
 def runner_names(r) -> list[str]:
     return [r.name, *(r.aliases or [])]
 
 
 def select_runner(conn, user_id, text: str, hint: str | None, project_context: dict | None,
-                  named: str | None = None):
+                  named: str | None = None, project_id=None):
     """Returns (runner_row | None, error_code | None).
-    Order: watch hint > machine named by the model (Jev) > name in the text > project default > user default."""
+    Order: watch hint > machine named by the model (Jev) > name in the text > project default >
+    a machine that reported the project (the user default first) > user default."""
     runners = conn.execute(select(db.runners).where(db.runners.c.user_id == user_id,
                                                     db.runners.c.enabled.is_(True))).all()
     by_name = {norm(n): r for r in runners for n in runner_names(r)}
@@ -70,7 +89,21 @@ def select_runner(conn, user_id, text: str, hint: str | None, project_context: d
     default_name = (project_context or {}).get("default_runner")
     if default_name and norm(default_name) in by_name:
         return by_name[norm(default_name)], None
+    if project_id is not None:
+        here = set(conn.execute(select(db.project_runners.c.runner_id)
+                                .where(db.project_runners.c.project_id == project_id)).scalars())
+        if available := sorted((r for r in runners if r.id in here), key=lambda r: (not r.is_default, r.name)):
+            return available[0], None
     return next((r for r in runners if r.is_default), None), None
+
+
+def enqueue_sync(conn, runner_id):
+    pending = conn.execute(select(db.outbox_events.c.id).where(
+        db.outbox_events.c.event_type == SYNC_EVENT, db.outbox_events.c.aggregate_id == runner_id,
+        db.outbox_events.c.published_at.is_(None), db.outbox_events.c.attempts < MAX_ATTEMPTS)).first()
+    if pending is None:  # one queued sync per machine is enough
+        conn.execute(db.outbox_events.insert().values(event_type=SYNC_EVENT, aggregate_id=runner_id,
+                                                      trace_id=uuid.uuid4(), payload={}))
 
 
 def enqueue_dispatch(conn, run_id, trace_id):
@@ -152,12 +185,13 @@ def _post_signed(post, runner, raw, delivery_id) -> str | None:
 
 
 def deliver_dispatches(engine, post, base_url: str | None = None, limit: int = 50) -> int:
-    """Outbox relay for run.dispatch.v1 and run.cancel.v1. `post(url, content, headers) -> status_code`."""
+    """Outbox relay for run.dispatch.v1, run.message.v1, run.cancel.v1 and runner.sync.v1.
+    `post(url, content, headers) -> status_code`."""
     base_url = base_url or os.environ.get("VOX_PUBLIC_BASE_URL", "")
     delivered = 0
     with engine.connect() as conn:
         pending = conn.execute(select(db.outbox_events).where(
-            db.outbox_events.c.event_type.in_([DISPATCH_EVENT, MESSAGE_EVENT, CANCEL_EVENT]),
+            db.outbox_events.c.event_type.in_([DISPATCH_EVENT, MESSAGE_EVENT, CANCEL_EVENT, SYNC_EVENT]),
             db.outbox_events.c.published_at.is_(None),
             db.outbox_events.c.attempts < MAX_ATTEMPTS).order_by(db.outbox_events.c.created_at).limit(limit)).all()
     for ev in pending:
@@ -171,6 +205,12 @@ def deliver_dispatches(engine, post, base_url: str | None = None, limit: int = 5
                     continue
                 if is_paused(conn, run.user_id):
                     continue  # held until resume; not an attempt
+            elif ev.event_type == SYNC_EVENT:  # read-only listing: delivered even while paused
+                runner = conn.execute(select(db.runners).where(db.runners.c.id == ev.aggregate_id)).one()
+                payload = {"vox": SYNC_EVENT, "runner": runner.name,
+                           "sync": {"url": f"{base_url.rstrip('/')}/v1/runners/{quote(runner.name, safe='')}/projects",
+                                    "token": sync_token(runner.id, now + SYNC_TTL)},
+                           "sent_at": now.isoformat()}
             else:
                 if db.parse_ts(ev.payload["expires_at"]) <= now:
                     conn.execute(update(db.outbox_events).where(db.outbox_events.c.id == ev.id)

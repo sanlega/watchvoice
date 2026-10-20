@@ -10,7 +10,7 @@ Watch ─texto─► VOX backend ─router + política─► task + run ─outbo
 ```
 
 ## Selección de máquina
-`runner_hint` del reloj → mención en el texto ("en el mac", "en mi pc", "en el servidor"; solo nombres y alias registrados, con preposición) → `projects.context_json.default_runner` → runner `is_default` del usuario.
+`runner_hint` del reloj → mención en el texto ("en el mac", "en mi pc", "en el servidor"; solo nombres y alias registrados, con preposición) → `projects.context_json.default_runner` → una máquina que tiene el proyecto según la última sincronización (la `is_default` si lo tiene) → runner `is_default` del usuario.
 - Una máquina desconocida o dos máquinas mencionadas → `needs_clarification` (`unknown_runner` / `ambiguous_runner`) **sin crear tarea**.
 - Ningún runner configurado → la tarea queda `unassigned` (no se envía nada).
 - Las ejecuciones que requieren aprobación **no se despachan** hasta que se aprueban.
@@ -54,3 +54,12 @@ Watch ─texto─► VOX backend ─router + política─► task + run ─outbo
   - `new_project`.
   - `implement_feature`: rama y PR en borrador.
 - **Responder en la misma conversación:** desde el reloj, con "Responder" (`reply_to_run_id`), o por voz ("sigue con lo de Musiquillas…", que continúa la última conversación de ese proyecto). Se crea un intento nuevo del run, se vuelve a evaluar la política sobre el texto nuevo y el lanzador hace `t3_thread_send` al mismo hilo (`run.message.v1`, con `clientRequestId` = id del run). El intento anterior queda sustituido, así que un timeout ya no puede cancelar el hilo.
+
+## Sincronización de proyectos (v0.9, issue #7)
+Cada máquina informa de sus proyectos T3 (`title`, `folder`, `has_git`, `has_origin`) con `POST /v1/runners/{nombre}/projects`. El backend fusiona por nombre normalizado: crea los que faltan, guarda en qué máquinas está cada uno (`project_runners`, migración 007) y restaura un proyecto archivado si vuelve a aparecer. Un proyecto que **ninguna** máquina informa ya se archiva, y solo si no tiene tareas. Nunca se borra nada.
+
+**Autenticación (diseño elegido):** el lanzador no debe ver el secreto HMAC del webhook (`runners.secret_env`), así que no firma el cuerpo. Usa un token *bearer* por máquina, `<exp>.<HMAC(VOX_CALLBACK_SECRET, "sync:<runner_id>:<exp>")>`, que se deriva igual que los tokens de callback: no se guarda, la caducidad va dentro del MAC y solo sirve para informar la lista de **esa** máquina.
+- **"Sincronizar" en el reloj** (`POST /v1/runners/sync`, credencial del dispositivo, scope `runs:control`): encola un `runner.sync.v1` por máquina (como mucho uno pendiente) por el mismo outbox firmado que `run.dispatch.v1`. El cuerpo lleva `sync.url` y un token de 24 h. Se entrega aunque haya pausa, porque solo lee. El lanzador sigue la sección `runner.sync.v1` de `contracts/t3code/dispatcher-prompt.md`.
+- **Cada hora:** una tarea T3 `{type:'interval', everyMs:3600000}` con el prompt `contracts/t3code/sync-task-prompt.md`. Usa un token de 365 días creado con `python -m app.admin runner-sync-token --email … --name pc` y guardado en `~/.vox/secrets.env` (`VOX_SYNC_URL`, `VOX_SYNC_TOKEN`), fuera del repo.
+- **Revocación:** rotar `VOX_CALLBACK_SECRET` invalida todos los tokens de sync, y también los callbacks de los runs abiertos. No hay revocación por máquina; deshabilitar el runner (`enabled=false`) también rechaza su token.
+- **No verificado:** la tarea por intervalo y el `runner.sync.v1` no se han ejecutado contra un T3 real; la migración 007 no se ha aplicado en PostgreSQL (los tests usan SQLite).

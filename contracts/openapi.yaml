@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: VOX Agent API
-  version: 0.8.0
+  version: 0.9.0
   description: >-
     Self-hosted voice-to-project-agent API. Mutations are idempotent.
     v0.3.0 is purely additive over v0.2.0: transcript-first `/instructions` for the
@@ -14,6 +14,8 @@ info:
     v0.6.0: reply_to_run_id continues an existing T3 conversation; intents open_issue and analyze_bug;
     run.message.v1 runner event.
     v0.8.0: optional `result` (full agent answer, max 4000) on RunEventIn and RunProgress.
+    v0.9.0: project sync. Runners report their T3 projects (POST /runners/{name}/projects, RunnerSyncAuth);
+    the watch asks every runner to report now (POST /runners/sync -> runner.sync.v1 runner event).
 servers:
   - url: https://vox.example.invalid/v1
 security:
@@ -284,11 +286,39 @@ paths:
       security: [{DeviceAuth: []}]
       responses:
         '200': {description: Rules, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/PolicyRuleOut'}}}}}
+  /runners/sync:
+    post:
+      tags: [Projects]
+      summary: '"Sincronizar" on the watch: queue a runner.sync.v1 webhook to every enabled runner (v0.9)'
+      security: [{DeviceAuth: []}]
+      responses:
+        '202': {description: Queued, content: {application/json: {schema: {type: object, properties: {runners: {type: integer}}}}}}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+  /runners/{name}/projects:
+    post:
+      tags: [Projects]
+      summary: A runner reports its T3 projects (v0.9). Merged by normalized name; never deletes.
+      description: >-
+        Replaces this runner's availability list. Missing projects are created; a project no runner reports
+        any more is archived only if it has no tasks; a reported archived project is restored.
+      security: [{RunnerSyncAuth: []}]
+      parameters: [{name: name, in: path, required: true, schema: {type: string}}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/RunnerProjectsIn'}}}
+      responses:
+        '200':
+          description: Merged
+          content: {application/json: {schema: {type: object, properties: {reported: {type: integer}, created: {type: integer}, archived: {type: integer}}}}}
+        '401': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
 components:
   securitySchemes:
     BearerAuth: {type: http, scheme: bearer, bearerFormat: JWT}
     DeviceAuth: {type: http, scheme: bearer, description: Revocable device credential}
     RunCallbackAuth: {type: http, scheme: bearer, description: 'Per-run token delivered in the signed dispatch webhook; valid 24 h after dispatch'}
+    RunnerSyncAuth: {type: http, scheme: bearer, description: '"<exp>.<hex HMAC>" per-runner sync token: 24 h in runner.sync.v1, or 365 days from app.admin runner-sync-token'}
   parameters:
     RecordingId: {name: recording_id, in: path, required: true, schema: {type: string, format: uuid}}
     ProjectId: {name: project_id, in: path, required: true, schema: {type: string, format: uuid}}
@@ -461,6 +491,21 @@ components:
         result: {type: [string, 'null'], maxLength: 4000, description: 'v0.8: full agent answer (e.g. analyze_bug); untrusted display text'}
         pr_url: {type: [string, 'null'], format: uri}
         updated_at: {type: [string, 'null'], format: date-time}
+    RunnerProject:
+      type: object
+      additionalProperties: false
+      required: [title, folder, has_git, has_origin]
+      properties:
+        title: {type: string, minLength: 1, maxLength: 200, description: T3 project title}
+        folder: {type: string, maxLength: 1000}
+        has_git: {type: boolean}
+        has_origin: {type: boolean}
+    RunnerProjectsIn:
+      type: object
+      additionalProperties: false
+      required: [projects]
+      properties:
+        projects: {type: array, maxItems: 500, items: {$ref: '#/components/schemas/RunnerProject'}}
     RunEventIn:
       type: object
       additionalProperties: false

@@ -8,6 +8,7 @@ python -m app.admin rule-add --email ... [--runner vps] [--project musiquillas] 
     --effect deploy.production=ask --effect data.delete=deny [--hours 2]
 python -m app.admin project-add --email ... --name Musiquillas [--alias musiquilla] [--default-runner pc] [--notes]
 python -m app.admin rule-list --email ... | rule-revoke --email ... --id <rule_id> | status --email ...
+python -m app.admin runner-sync-token --email ... --name pc   # long-lived bearer for the hourly T3 sync task
 """
 import argparse
 import os
@@ -21,6 +22,9 @@ from .control import PAIR_TTL, new_pairing_code
 from .policy import CATALOG, FLOOR
 from .processor import _slug, apply_rule, audit, load_rules, sha256
 from .router import norm
+from .runners import sync_token
+
+SYNC_TOKEN_TTL = timedelta(days=365)
 
 
 def _user(conn, email):
@@ -40,14 +44,16 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="vox-admin")
     ap.add_argument("--db", default=os.environ.get("VOX_DATABASE_URL", "sqlite:///./vox-dev.db"))
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ["user-add", "pair", "runner-add", "project-add", "rule-add", "rule-list", "rule-revoke", "status"]:
+    for name in ["user-add", "pair", "runner-add", "project-add", "rule-add", "rule-list", "rule-revoke", "status",
+                 "runner-sync-token"]:
         p = sub.add_parser(name)
         p.add_argument("--email", required=True)
         if name == "pair":
             p.add_argument("--name", default="Apple Watch")
             p.add_argument("--replace")
-        if name == "runner-add":
+        if name in ("runner-add", "runner-sync-token"):
             p.add_argument("--name", required=True)
+        if name == "runner-add":
             p.add_argument("--webhook-url", required=True)
             p.add_argument("--secret-env", required=True)
             p.add_argument("--alias", action="append", default=[])
@@ -105,6 +111,14 @@ def main(argv=None):
                                                     is_default=args.default, trust=args.trust))
             _audit(conn, uid, "runner.added", "runner", rid, {"name": args.name, "trust": args.trust})
             print(rid)
+        elif args.cmd == "runner-sync-token":
+            rid = conn.execute(select(db.runners.c.id).where(db.runners.c.user_id == uid,
+                                                             db.runners.c.name == args.name)).scalar()
+            if rid is None:
+                raise SystemExit("unknown runner")
+            # Revoke all of them by rotating VOX_CALLBACK_SECRET (also invalidates open run callbacks).
+            print(sync_token(rid, now + SYNC_TOKEN_TTL))
+            _audit(conn, uid, "runner.sync_token_issued", "runner", rid)
         elif args.cmd == "project-add":
             pid, ctx = uuid.uuid4(), {k: v for k, v in {"default_runner": args.default_runner,
                                                         "notes": args.notes or None}.items() if v}

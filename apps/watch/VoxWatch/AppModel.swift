@@ -329,6 +329,19 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func syncProjects() async {
+        guard let api = makeAPI() else { return }
+        do {
+            try await api.syncProjects()
+            notice = "Sincronización pedida a las máquinas"
+            haptic(.success)
+        } catch {
+            note(error)
+            notice = "No se pudo sincronizar (\(Self.code(error)))"
+            haptic(.failure)
+        }
+    }
+
     func loadPolicy() async {
         guard let api = makeAPI() else { return }
         do {

@@ -12,10 +12,11 @@ from sqlalchemy import func, select, update
 from . import db, devicesig, notify
 from .deps import Problem, device, engine, require, require_idempotency_key, require_signature
 from .policy import CATALOG, evaluate, risk_of
-from .processor import apply_rule, audit, aware, create_approval, load_rules, sha256
-from .runners import enqueue_cancel, enqueue_start, verify_callback_token
+from .processor import _slug, apply_rule, audit, aware, create_approval, load_rules, sha256
+from .router import norm
+from .runners import enqueue_cancel, enqueue_start, enqueue_sync, verify_callback_token, verify_sync_token
 from .schemas import (AgentApprovalIn, AgentApprovalOut, Approval, ApprovalDecision, PairIn, PairOut, PauseIn,
-                      PolicyRuleOut, PushTokenIn, RunEventIn, SignedBody)
+                      PolicyRuleOut, PushTokenIn, RunEventIn, RunnerProjectsIn, SignedBody)
 
 router = APIRouter()
 PAIR_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # no 0/O/1/I/L
@@ -330,3 +331,70 @@ def effective_policy(request: Request, dev=Depends(device)):
     return [PolicyRuleOut(id=r["id"], runner=names.get(r["runner_id"]), project=projects.get(r["project_id"]),
                           mode=r["mode"], effects=r["effects"], source=r["source"], expires_at=r["expires_at"])
             for r in rules]
+
+
+# ---------------------------------------------------------------- project sync (runners report their T3 projects)
+
+@router.post("/v1/runners/sync", status_code=202)
+def sync_runners(request: Request, dev=Depends(device)):
+    """'Sincronizar' on the watch: ask every enabled machine to report its projects (runner.sync.v1)."""
+    require(dev, "runs:control")
+    with engine(request).begin() as conn:
+        ids = conn.execute(select(db.runners.c.id).where(db.runners.c.user_id == dev.user_id,
+                                                         db.runners.c.enabled.is_(True))).scalars().all()
+        for runner_id in ids:
+            enqueue_sync(conn, runner_id)
+    return {"runners": len(ids)}
+
+
+@router.post("/v1/runners/{name}/projects")
+def runner_projects(name: str, body: RunnerProjectsIn, request: Request,
+                    authorization: str | None = Header(default=None)):
+    token = authorization[7:].strip() if authorization and authorization.startswith("Bearer ") else ""
+    now = db.now()
+    with engine(request).begin() as conn:
+        runner = next((r for r in conn.execute(select(db.runners).where(db.runners.c.name == name,
+                                                                        db.runners.c.enabled.is_(True)))
+                       if verify_sync_token(r.id, token, now)), None)
+        if runner is None:
+            raise Problem(401, "unauthorized", "Invalid or expired sync token", {"WWW-Authenticate": "Bearer"})
+        counts = merge_projects(conn, runner, body.projects, now)
+        audit(conn, user_id=runner.user_id, event_type="runner.projects_synced", subject_type="runner",
+              subject_id=runner.id, actor_type="runner", actor_id=f"t3code:{runner.name}", payload=counts)
+    return counts
+
+
+def merge_projects(conn, runner, reported, now) -> dict:
+    """Merge by normalized name. Never deletes a project: one that no machine reports any more is archived,
+    and only if it has no tasks. A reported archived project comes back."""
+    uid = runner.user_id
+    rows = conn.execute(select(db.projects).where(db.projects.c.user_id == uid)).all()
+    known = {norm(p.name): p for p in sorted(rows, key=lambda p: p.archived_at is None)}  # active wins
+    items = {norm(p.title): p for p in reported if norm(p.title)}
+    before = set(conn.execute(select(db.project_runners.c.project_id)
+                              .where(db.project_runners.c.runner_id == runner.id)).scalars())
+    conn.execute(db.project_runners.delete().where(db.project_runners.c.runner_id == runner.id))
+    created, here = 0, set()
+    for key, item in items.items():
+        project = known.get(key)
+        if project is None:
+            pid, created = uuid.uuid4(), created + 1
+            conn.execute(db.projects.insert().values(id=pid, user_id=uid, slug=_slug(conn, uid, item.title),
+                                                     name=item.title.strip(), description=""))
+        else:
+            pid = project.id
+            if project.archived_at is not None:
+                conn.execute(update(db.projects).where(db.projects.c.id == pid)
+                             .values(archived_at=None, updated_at=now))
+        here.add(pid)
+        conn.execute(db.project_runners.insert().values(project_id=pid, runner_id=runner.id, folder=item.folder,
+                                                        has_git=item.has_git, has_origin=item.has_origin, seen_at=now))
+    gone = before - here
+    if gone:  # still on another machine, or has history: keep
+        gone -= set(conn.execute(select(db.project_runners.c.project_id)
+                                 .where(db.project_runners.c.project_id.in_(gone))).scalars())
+        gone -= set(conn.execute(select(db.tasks.c.project_id).where(db.tasks.c.project_id.in_(gone))).scalars())
+    if gone:
+        conn.execute(update(db.projects).where(db.projects.c.id.in_(gone), db.projects.c.archived_at.is_(None))
+                     .values(archived_at=now, updated_at=now))
+    return {"reported": len(items), "created": created, "archived": len(gone)}
