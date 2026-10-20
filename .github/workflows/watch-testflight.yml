@@ -1,0 +1,89 @@
+name: watch-testflight
+
+# Push a tag like v0.2.0: the tag becomes the version testers see. Run it by hand for an extra build.
+on:
+  push:
+    tags: ["v*"]  workflow_dispatch:
+    inputs:
+      changelog:
+        description: What to test (shown to TestFlight testers)
+        required: false
+        default: ""
+      force_profile:
+        description: Regenerate the provisioning profiles (after changing capabilities)
+        type: boolean
+        required: false
+        default: false
+
+permissions: {contents: read} # certificates live in musiquillas' private repo, reached with MATCH_DEPLOY_KEY
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+env:
+  # Explicit Xcode on the pinned macos-26 image (bump together with runs-on, as in ci.yml).
+  DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+
+jobs:
+  build-and-upload:
+    runs-on: macos-26
+    timeout-minutes: 90
+    defaults: {run: {working-directory: apps/watch}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+          working-directory: apps/watch
+      - run: xcodebuild -version
+      - run: brew install xcodegen && xcodegen
+      - name: Validate configuration
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_API_KEY: ${{ secrets.ASC_API_KEY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+          MATCH_DEPLOY_KEY: ${{ secrets.MATCH_DEPLOY_KEY }}
+        run: |
+          for v in ASC_KEY_ID ASC_ISSUER_ID ASC_API_KEY APPLE_TEAM_ID MATCH_PASSWORD MATCH_DEPLOY_KEY; do
+            if [[ -z "${!v}" ]]; then echo "Missing secret $v" >&2; exit 1; fi
+          done
+      - name: SSH key for the certificates repo
+        env:
+          MATCH_DEPLOY_KEY: ${{ secrets.MATCH_DEPLOY_KEY }}
+        run: |
+          eval "$(ssh-agent -s)"
+          echo "$MATCH_DEPLOY_KEY" | ssh-add -
+          mkdir -p ~/.ssh && ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> "$GITHUB_ENV"
+          echo "SSH_AGENT_PID=$SSH_AGENT_PID" >> "$GITHUB_ENV"
+      - name: Build and upload to TestFlight
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_API_KEY: ${{ secrets.ASC_API_KEY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+          TESTFLIGHT_CHANGELOG: ${{ github.event.inputs.changelog }}
+          FORCE_PROFILE: ${{ github.event.inputs.force_profile }}
+          FASTLANE_DISABLE_COLORS: "1"
+          FASTLANE_SKIP_UPDATE_CHECK: "1"
+        run: |
+          export BUILD_NUMBER="$(date -u +%Y%m%d%H%M)"
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            export MARKETING_VERSION="${GITHUB_REF_NAME#v}"
+            export TESTFLIGHT_CHANGELOG="${TESTFLIGHT_CHANGELOG:-$(git tag -l --format='%(contents)' "$GITHUB_REF_NAME")}"
+          fi
+          echo "Version ${MARKETING_VERSION:-from project.yml}, build $BUILD_NUMBER"
+          bundle exec fastlane ios beta
+      - name: Save signed IPA
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: VOX-ipa
+          path: apps/watch/*.ipa
+          if-no-files-found: ignore
+          retention-days: 3
