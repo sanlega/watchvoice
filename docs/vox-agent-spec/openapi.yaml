@@ -1,0 +1,179 @@
+openapi: 3.1.0
+info:
+  title: VOX Agent API
+  version: 0.2.0
+  description: Self-hosted voice-to-project-agent API. Mutations are idempotent.
+servers:
+  - url: https://vox.example.invalid/v1
+security:
+  - BearerAuth: []
+tags:
+  - name: Devices
+  - name: Recordings
+  - name: Projects
+  - name: Tasks
+  - name: Runs
+  - name: Approvals
+paths:
+  /devices/me:
+    get:
+      tags: [Devices]
+      summary: Get registered device identity and configuration
+      security: [{DeviceAuth: []}]
+      responses:
+        '200': {description: Device configuration, content: {application/json: {schema: {$ref: '#/components/schemas/Device'}}}}
+  /devices/recordings/{recording_id}:
+    put:
+      tags: [Recordings]
+      summary: Upload one final recording; retries with same ID and SHA are safe
+      security: [{DeviceAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/RecordingId'
+        - {name: X-Content-SHA256, in: header, required: true, schema: {type: string, pattern: '^[0-9a-f]{64}$'}}
+        - {name: X-Duration-Ms, in: header, required: true, schema: {type: integer, minimum: 1, maximum: 90000}}
+      requestBody:
+        required: true
+        content:
+          audio/wav:
+            schema: {type: string, format: binary}
+      responses:
+        '201': {description: Recording durably stored, content: {application/json: {schema: {$ref: '#/components/schemas/RecordingReceipt'}}}}
+        '200': {description: Exact replay, content: {application/json: {schema: {$ref: '#/components/schemas/RecordingReceipt'}}}}
+        '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+  /recordings:
+    get:
+      tags: [Recordings]
+      parameters: [{$ref: '#/components/parameters/Cursor'}, {$ref: '#/components/parameters/Limit'}]
+      responses:
+        '200': {description: Recordings, content: {application/json: {schema: {type: object, required: [items], properties: {items: {type: array, items: {$ref: '#/components/schemas/Recording'}}, next_cursor: {type: [string, 'null']}}}}}}
+  /recordings/{recording_id}:
+    get:
+      tags: [Recordings]
+      parameters: [{$ref: '#/components/parameters/RecordingId'}]
+      responses:
+        '200': {description: Recording state, content: {application/json: {schema: {$ref: '#/components/schemas/Recording'}}}}
+        '404': {$ref: '#/components/responses/Problem'}
+  /projects:
+    get:
+      tags: [Projects]
+      responses:
+        '200': {description: Projects, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Project'}}}}}
+    post:
+      tags: [Projects]
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/NewProject'}}}
+      responses:
+        '201': {description: Project created, content: {application/json: {schema: {$ref: '#/components/schemas/Project'}}}}
+        '409': {$ref: '#/components/responses/Problem'}
+  /projects/{project_id}:
+    get:
+      tags: [Projects]
+      parameters: [{$ref: '#/components/parameters/ProjectId'}]
+      responses:
+        '200': {description: Project, content: {application/json: {schema: {$ref: '#/components/schemas/Project'}}}}
+  /routing-decisions/{decision_id}/resolve:
+    post:
+      tags: [Tasks]
+      summary: Owner manually confirms or corrects a project assignment
+      parameters:
+        - {name: decision_id, in: path, required: true, schema: {type: string, format: uuid}}
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, required: [project_id], properties: {project_id: {type: string, format: uuid}, intent: {type: string}}}}}
+      responses:
+        '200': {description: Routed decision resolved, content: {application/json: {schema: {$ref: '#/components/schemas/Task'}}}}
+        '409': {$ref: '#/components/responses/Problem'}
+  /tasks:
+    get:
+      tags: [Tasks]
+      parameters: [{$ref: '#/components/parameters/Cursor'}, {$ref: '#/components/parameters/Limit'}]
+      responses:
+        '200': {description: Tasks, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Task'}}}}}
+    post:
+      tags: [Tasks]
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/NewTask'}}}
+      responses:
+        '201': {description: Task, content: {application/json: {schema: {$ref: '#/components/schemas/Task'}}}}
+  /tasks/{task_id}:
+    get:
+      tags: [Tasks]
+      parameters: [{$ref: '#/components/parameters/TaskId'}]
+      responses:
+        '200': {description: Task details, content: {application/json: {schema: {$ref: '#/components/schemas/Task'}}}}
+  /tasks/{task_id}/runs:
+    post:
+      tags: [Runs]
+      parameters: [{$ref: '#/components/parameters/TaskId'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, required: [executor], properties: {executor: {type: string}, retry_of_run_id: {type: [string, 'null'], format: uuid}}}}}
+      responses:
+        '201': {description: Run queued, content: {application/json: {schema: {$ref: '#/components/schemas/Run'}}}}
+  /runs/{run_id}:
+    get:
+      tags: [Runs]
+      parameters: [{$ref: '#/components/parameters/RunId'}]
+      responses:
+        '200': {description: Run, content: {application/json: {schema: {$ref: '#/components/schemas/Run'}}}}
+  /runs/{run_id}/cancel:
+    post:
+      tags: [Runs]
+      parameters: [{$ref: '#/components/parameters/RunId'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      responses:
+        '202': {description: Cancellation requested}
+  /runs/{run_id}/events:
+    get:
+      tags: [Runs]
+      parameters: [{$ref: '#/components/parameters/RunId'}, {$ref: '#/components/parameters/Cursor'}]
+      responses:
+        '200': {description: Run event stream snapshot, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/RunEvent'}}}}}
+  /approvals:
+    get:
+      tags: [Approvals]
+      responses:
+        '200': {description: Pending approvals, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Approval'}}}}}
+  /approvals/{approval_id}/decision:
+    post:
+      tags: [Approvals]
+      parameters:
+        - {name: approval_id, in: path, required: true, schema: {type: string, format: uuid}}
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, required: [decision], properties: {decision: {type: string, enum: [approved, denied]}}}}}
+      responses:
+        '200': {description: Approval updated, content: {application/json: {schema: {$ref: '#/components/schemas/Approval'}}}}
+        '409': {$ref: '#/components/responses/Problem'}
+components:
+  securitySchemes:
+    BearerAuth: {type: http, scheme: bearer, bearerFormat: JWT}
+    DeviceAuth: {type: http, scheme: bearer, description: Revocable device credential}
+  parameters:
+    RecordingId: {name: recording_id, in: path, required: true, schema: {type: string, format: uuid}}
+    ProjectId: {name: project_id, in: path, required: true, schema: {type: string, format: uuid}}
+    TaskId: {name: task_id, in: path, required: true, schema: {type: string, format: uuid}}
+    RunId: {name: run_id, in: path, required: true, schema: {type: string, format: uuid}}
+    IdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 8, maxLength: 128}}
+    Cursor: {name: cursor, in: query, schema: {type: string}}
+    Limit: {name: limit, in: query, schema: {type: integer, default: 30, minimum: 1, maximum: 100}}
+  responses:
+    Problem: {description: Request error, content: {application/json: {schema: {$ref: '#/components/schemas/Problem'}}}}
+  schemas:
+    Problem: {type: object, required: [code, message, trace_id], properties: {code: {type: string}, message: {type: string}, trace_id: {type: string, format: uuid}, details: {type: object}}}
+    Device: {type: object, required: [id, name, max_duration_ms], properties: {id: {type: string, format: uuid}, name: {type: string}, max_duration_ms: {type: integer, example: 90000}}}
+    RecordingReceipt: {type: object, required: [id, status, trace_id], properties: {id: {type: string, format: uuid}, status: {type: string, enum: [stored]}, trace_id: {type: string, format: uuid}}}
+    Recording: {type: object, required: [id, state, created_at], properties: {id: {type: string, format: uuid}, state: {type: string}, transcript: {type: [string, 'null']}, created_at: {type: string, format: date-time}, trace_id: {type: string, format: uuid}}}
+    NewProject: {type: object, required: [slug, name], properties: {slug: {type: string, pattern: '^[a-z0-9][a-z0-9-]{1,62}$'}, name: {type: string, minLength: 1}, description: {type: string}, repo_url: {type: [string, 'null'], format: uri}}}
+    Project: {allOf: [{$ref: '#/components/schemas/NewProject'}, {type: object, required: [id], properties: {id: {type: string, format: uuid}}}]}
+    NewTask: {type: object, required: [project_id, title, intent, agent_type], properties: {project_id: {type: string, format: uuid}, title: {type: string}, description: {type: string}, intent: {type: string}, agent_type: {type: string}, budget_usd: {type: number, minimum: 0}}}
+    Task: {allOf: [{$ref: '#/components/schemas/NewTask'}, {type: object, required: [id, state], properties: {id: {type: string, format: uuid}, state: {type: string}, recording_id: {type: [string, 'null'], format: uuid}}}]}
+    Run: {type: object, required: [id, task_id, state, attempt], properties: {id: {type: string, format: uuid}, task_id: {type: string, format: uuid}, state: {type: string}, attempt: {type: integer}, external_pr_url: {type: [string, 'null'], format: uri}}}
+    RunEvent: {type: object, required: [event_type, created_at], properties: {event_type: {type: string}, created_at: {type: string, format: date-time}, payload: {type: object}}}
+    Approval: {type: object, required: [id, run_id, capability, action_summary, state], properties: {id: {type: string, format: uuid}, run_id: {type: string, format: uuid}, capability: {type: string}, action_summary: {type: string}, state: {type: string}, expires_at: {type: string, format: date-time}}}

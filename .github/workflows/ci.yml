@@ -1,0 +1,27 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    defaults: {run: {working-directory: backend}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest -q
+  watch-core:
+    # Logic + contract-fixture tests of the watch client. Whistle is not linked here
+    # (no simulator slice exists); device validation is manual (W-023).
+    runs-on: macos-latest
+    defaults: {run: {working-directory: apps/watch/VoxWatchCore}}
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift test
+  watch-app:
+    runs-on: macos-latest
+    defaults: {run: {working-directory: apps/watch}}
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install xcodegen && xcodegen
+      - run: xcodebuild -project VoxWatch.xcodeproj -target VoxWatch -sdk watchsimulator -configuration Debug CODE_SIGNING_ALLOWED=NO build

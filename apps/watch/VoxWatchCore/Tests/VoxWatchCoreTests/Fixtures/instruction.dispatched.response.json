@@ -1,0 +1,21 @@
+{
+  "id": "0b8f3c2e-6d0a-4b8e-9c1f-2a7d5e4b3c21",
+  "client_instruction_id": "c1fd810c-5b24-47a9-acb5-81702daf8126",
+  "status": "dispatched",
+  "intent": "implement_feature",
+  "project_id": "5e0c9a1b-2f3d-4c5e-8a7b-9d0e1f2a3b4c",
+  "task_id": "7a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+  "agent_run_id": "9c8b7a6d-5e4f-4d3c-8b2a-1f0e9d8c7b6a",
+  "approval_id": null,
+  "candidates": [],
+  "error_code": null,
+  "progress": {
+    "runner": "mac",
+    "run_state": "running",
+    "summary": "Tests en verde, abriendo PR",
+    "pr_url": null,
+    "updated_at": "2026-10-20T10:05:00Z"
+  },
+  "created_at": "2026-10-20T10:00:00Z",
+  "updated_at": "2026-10-20T10:00:01Z"
+}

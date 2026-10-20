@@ -1,0 +1,6 @@
+// Used only by the *-Whistle configurations (SWIFT_INCLUDE_PATHS). The header is fetched by scripts/fetch-needle.sh.
+module CNeedle [system] {
+    header "../Vendor/needle/needle.h"
+    link "c++"
+    export *
+}
