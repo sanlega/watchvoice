@@ -1,6 +1,6 @@
 import Foundation
 
-// Wire models for contracts/openapi.yaml v0.3.0. Property names are the camelCase form of the
+// Wire models for contracts/openapi.yaml v0.4.0. Property names are the camelCase form of the
 // contract's snake_case keys; VoxJSON converts them, so no per-type CodingKeys are needed.
 
 public enum TranscriptionEngine: String, Codable, Sendable, CaseIterable {
@@ -18,6 +18,8 @@ public enum InstructionStatus: String, Codable, Sendable {
     case captured
     case dispatched
     case awaitingApproval = "awaiting_approval"
+    /// A voice policy change took effect.
+    case applied
     case failed
     case cancelled
     /// Forward compatibility: any status this build does not know.
@@ -31,7 +33,7 @@ public enum InstructionStatus: String, Codable, Sendable {
     /// No further status change is expected for the instruction itself.
     public var isFinal: Bool {
         switch self {
-        case .dispatched, .captured, .failed, .cancelled: return true
+        case .dispatched, .captured, .applied, .failed, .cancelled: return true
         case .queued, .routing, .needsClarification, .awaitingApproval, .unknown: return false
         }
     }
@@ -140,7 +142,7 @@ public struct Instruction: Codable, Sendable, Equatable, Identifiable {
     public var agentRunId: UUID?
     public var approvalId: UUID?
     public var candidates: [Candidate]?
-    /// e.g. ambiguous_route, unknown_runner, ambiguous_runner
+    /// e.g. ambiguous_route, unknown_runner, ambiguous_runner, policy_denied, policy_scope_missing
     public var errorCode: String?
     public var progress: RunProgress?
     public var createdAt: Date
@@ -219,38 +221,138 @@ public struct RunProgress: Codable, Sendable, Equatable {
 
 public struct Approval: Codable, Sendable, Equatable, Identifiable {
     public var id: UUID
-    public var runId: UUID
+    /// "action" | "policy_change" | "agent_request"; String for forward compatibility.
+    public var kind: String
+    public var runId: UUID?
     public var capability: String
+    /// Untrusted when `agentProvided` is true. Never log it.
     public var actionSummary: String
+    public var agentProvided: Bool
     public var state: String
-    public var expiresAt: Date?
+    /// "low" | "medium" | "high"
+    public var risk: String
+    public var expiresAt: Date
+    /// Signed back verbatim with the decision.
+    public var actionFingerprint: String
     public var projectId: UUID?
-    /// "low" | "medium" | "high"; String for forward compatibility.
-    public var risk: String?
-    public var challengeToken: String?
+    public var runner: String?
+    /// "isolated" | "cooperative"
+    public var runnerTrust: String?
 
-    public init(id: UUID, runId: UUID, capability: String, actionSummary: String, state: String,
-                expiresAt: Date? = nil, projectId: UUID? = nil, risk: String? = nil, challengeToken: String? = nil) {
+    public init(id: UUID, kind: String = "action", runId: UUID? = nil, capability: String, actionSummary: String,
+                agentProvided: Bool = false, state: String = "pending", risk: String = "low",
+                expiresAt: Date = Date().addingTimeInterval(900), actionFingerprint: String = String(repeating: "0", count: 64),
+                projectId: UUID? = nil, runner: String? = nil, runnerTrust: String? = nil) {
         self.id = id
+        self.kind = kind
         self.runId = runId
         self.capability = capability
         self.actionSummary = actionSummary
+        self.agentProvided = agentProvided
         self.state = state
-        self.expiresAt = expiresAt
-        self.projectId = projectId
         self.risk = risk
-        self.challengeToken = challengeToken
+        self.expiresAt = expiresAt
+        self.actionFingerprint = actionFingerprint
+        self.projectId = projectId
+        self.runner = runner
+        self.runnerTrust = runnerTrust
     }
 }
 
+/// Device-signed bodies (ADR-0001 §5). Build them with `DeviceSigner`.
 public struct ApprovalDecision: Codable, Sendable, Equatable {
     public enum Kind: String, Codable, Sendable { case approved, denied }
+    public var ts: String
+    public var signature: String
     public var decision: Kind
-    public var challengeToken: String?
+    public var actionFingerprint: String
+}
 
-    public init(decision: Kind, challengeToken: String?) {
-        self.decision = decision
-        self.challengeToken = challengeToken
+public struct SignedBody: Codable, Sendable, Equatable {
+    public var ts: String
+    public var signature: String
+}
+
+public struct PauseRequest: Codable, Sendable, Equatable {
+    public var ts: String
+    public var signature: String
+    public var paused: Bool
+}
+
+public struct PauseResult: Codable, Sendable, Equatable {
+    public var paused: Bool
+    public var cancelledRuns: Int?
+}
+
+public struct PairRequest: Codable, Sendable, Equatable {
+    public var code: String
+    /// base64 X9.63 P-256 public key
+    public var publicKey: String
+    public var name: String
+
+    public init(code: String, publicKey: String, name: String) {
+        self.code = code
+        self.publicKey = publicKey
+        self.name = name
+    }
+}
+
+public struct PairResponse: Codable, Sendable, Equatable {
+    public var deviceId: UUID
+    public var token: String
+}
+
+public struct PushTokenRequest: Codable, Sendable, Equatable {
+    public var token: String
+    /// "development" | "production"
+    public var environment: String
+
+    public init(token: String, environment: String) {
+        self.token = token
+        self.environment = environment
+    }
+}
+
+/// Read-only on the watch. Decoded with `VoxJSON.literalKeysDecoder()` so capability keys in
+/// `effects` (e.g. "repo.merge_protected") are not camel-cased.
+public struct PolicyRule: Codable, Sendable, Equatable, Identifiable {
+    public var id: UUID
+    public var runner: String?
+    public var project: String?
+    /// "bypass" | "granular"
+    public var mode: String
+    /// capability -> "allow" | "ask" | "deny"
+    public var effects: [String: String]
+    public var source: String
+    public var expiresAt: Date?
+
+    enum CodingKeys: String, CodingKey {
+        case id, runner, project, mode, effects, source
+        case expiresAt = "expires_at"
+    }
+
+    public init(id: UUID, runner: String?, project: String?, mode: String, effects: [String: String], source: String, expiresAt: Date?) {
+        self.id = id
+        self.runner = runner
+        self.project = project
+        self.mode = mode
+        self.effects = effects
+        self.source = source
+        self.expiresAt = expiresAt
+    }
+}
+
+/// Pairing codes from `python -m app.admin pair`: 8 chars, no 0/O/1/I/L.
+public enum PairingCode {
+    public static let alphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+
+    /// Uppercases, drops characters outside the alphabet and caps at 8.
+    public static func normalize(_ input: String) -> String {
+        String(input.uppercased().filter { alphabet.contains($0) }.prefix(8))
+    }
+
+    public static func isValid(_ code: String) -> Bool {
+        code.count == 8 && normalize(code) == code
     }
 }
 
@@ -281,6 +383,13 @@ public enum VoxJSON {
             }
             return date
         }
+        return decoder
+    }
+
+    /// Same dates as `decoder()` but keys are taken literally (types declare their own CodingKeys).
+    public static func literalKeysDecoder() -> JSONDecoder {
+        let decoder = VoxJSON.decoder()
+        decoder.keyDecodingStrategy = .useDefaultKeys
         return decoder
     }
 

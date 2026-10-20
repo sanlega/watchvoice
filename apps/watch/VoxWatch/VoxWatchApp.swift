@@ -1,9 +1,11 @@
 import SwiftUI
+import WatchKit
 import VoxWatchCore
 
 @main
 struct VoxWatchApp: App {
-    @StateObject private var model = AppModel()
+    @WKApplicationDelegateAdaptor(VoxAppDelegate.self) private var appDelegate
+    @StateObject private var model = AppModel.shared
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
@@ -36,6 +38,11 @@ struct RootView: View {
             default:
                 DeliveryView()
             }
+        }
+        // Opened from an approval notification ("Revisar" or tap).
+        .sheet(isPresented: Binding(get: { model.openApprovalId != nil }, set: { if !$0 { model.openApprovalId = nil } })) {
+            NavigationStack { ApprovalsView() }
+                .environmentObject(model)
         }
     }
 }

@@ -26,9 +26,12 @@ struct DeliveryView: View {
 
                 if case .taskStarted(let instruction) = model.flow, let progress = instruction.progress {
                     RunProgressView(progress: progress)
+                    if let runId = instruction.agentRunId, !progress.runState.isTerminal {
+                        StopRunButton(runId: runId)
+                    }
                 }
                 if model.connection == .authRequired {
-                    Text("Sesión caducada: inicia sesión en Ajustes. La instrucción sigue guardada.")
+                    Text("Sesión caducada: vincula el reloj en Ajustes. La instrucción sigue guardada.")
                         .font(.caption2)
                         .foregroundStyle(.orange)
                 }
@@ -60,6 +63,8 @@ struct DeliveryInfo {
             self.init("Requiere aprobación", "Revísala en Aprobaciones.", "hand.raised", .orange)
         case .captured:
             self.init("Capturado", "Guardado como idea. No se ejecutó nada.", "lightbulb", .yellow)
+        case .applied:
+            self.init("Regla aplicada", "La política de ejecución ha cambiado.", "checkmark.shield", .green)
         case .failed(let error):
             self.init("Error", Self.describe(error), "exclamationmark.triangle", .red)
         case .idle, .recording, .transcribing, .reviewing:
@@ -78,6 +83,8 @@ struct DeliveryInfo {
         switch instruction.errorCode {
         case "unknown_runner": return "¿En qué máquina? No conozco esa máquina."
         case "ambiguous_runner": return "¿En qué máquina? Hay varias posibles."
+        case "policy_ambiguous", "policy_scope_missing", "policy_scope_ambiguous", "policy_duration_missing":
+            return "Repite con máquina y duración. Di: en el VPS, durante 1 hora."
         default:
             let names = (instruction.candidates ?? []).map(\.name).joined(separator: ", ")
             return names.isEmpty ? "¿En qué proyecto?" : "¿En qué proyecto? \(names)"
@@ -93,7 +100,29 @@ struct DeliveryInfo {
         case .rejected(let code):
             return "El servidor rechazó la instrucción (\(code))."
         case .server(let code):
+            if code == "policy_denied" { return "Bloqueado por política." }
             return "La instrucción falló en el servidor (\(code ?? "sin código"))."
+        }
+    }
+}
+
+/// Signed cancel (ADR-0001 §8). The runner may take a while to stop, or not stop at all.
+struct StopRunButton: View {
+    @EnvironmentObject private var model: AppModel
+    let runId: UUID
+    @State private var requested = false
+
+    var body: some View {
+        VStack(spacing: 2) {
+            Button(role: .destructive) {
+                Task { requested = await model.cancelRun(runId) }
+            } label: {
+                Label(requested ? "Parada solicitada" : "Parar", systemImage: "stop.circle")
+            }
+            .disabled(requested)
+            Text("Parada best-effort")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
         }
     }
 }

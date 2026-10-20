@@ -64,6 +64,16 @@ targets:
         WKWatchOnly: true
         WKRunsIndependentlyOfCompanionApp: true
         NSMicrophoneUsageDescription: "VOX usa el micrófono solo mientras grabas una instrucción para tus agentes. El audio no sale del reloj salvo que lo autorices en Ajustes."
+    # APNs (ADR-0001 §6). Requires a PAID Apple Developer Program team: free/personal teams cannot
+    # sign aps-environment. Distribution export normally re-signs it as production (verify on first upload).
+    entitlements:
+      path: VoxWatch/VoxWatch.entitlements
+      properties:
+        aps-environment: development
+    attributes:
+      SystemCapabilities:
+        com.apple.Push:
+          enabled: 1
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.vox.watch

@@ -1,3 +1,4 @@
+import LocalAuthentication
 import SwiftUI
 import WatchKit
 import VoxWatchCore
@@ -10,10 +11,42 @@ enum SettingsKey {
     static let serverURL = "serverURL"
     static let runnerHint = "runnerHint"                 // "" = backend decides
     static let useMockASR = "useMockASR"                 // DEBUG only
+    static let paused = "paused"                         // last confirmed "Pausar todo" state
+    static let pushToken = "pushToken"                   // APNs token hex (not a secret)
+}
+
+/// Non-isolated backend access, shared by the UI and the background notification action handler.
+enum VoxBackend {
+    static let service = "app.vox.watch"
+    static let defaultServerURL = "https://vox.santi.tools/v1"
+    static var auth: KeychainAuthSession { KeychainAuthSession(service: service) }
+    static var deviceIdStore: KeychainAuthSession { KeychainAuthSession(service: service, account: "device-id") }
+
+    static func client() -> URLSessionWatchAPIClient? {
+        let stored = UserDefaults.standard.string(forKey: SettingsKey.serverURL) ?? ""
+        guard let url = URL(string: stored.isEmpty ? defaultServerURL : stored) else { return nil }
+        return try? URLSessionWatchAPIClient(baseURL: url, auth: auth)
+    }
+
+    static func signer() async throws -> DeviceSigner {
+        let key = try DeviceKey.loadOrCreate(service: service)
+        return DeviceSigner(key: key, deviceId: try await deviceIdStore.token())
+    }
+
+    /// Exactly one network call: notification actions have an undocumented time budget.
+    /// New Idempotency-Key per tap; the server replays the same decision and rejects a different one.
+    static func decide(approvalId: UUID, fingerprint: String, approve: Bool) async throws {
+        guard let api = client() else { throw APIError.insecureBaseURL }
+        let body = try await signer().decision(approvalId: approvalId, fingerprint: fingerprint, approve: approve)
+        _ = try await api.decide(approvalId: approvalId, decision: body, idempotencyKey: UUID())
+    }
 }
 
 @MainActor
 final class AppModel: ObservableObject {
+    /// Single instance so the notification delegate can open an approval card.
+    static let shared = AppModel()
+
     enum Connection: Equatable {
         case unknown, online, offline, authRequired, notConfigured
     }
@@ -25,6 +58,12 @@ final class AppModel: ObservableObject {
     @Published private(set) var projects: [Project] = []
     @Published private(set) var connection: Connection = .unknown
     @Published private(set) var whistleStatus: ASRAvailability?
+    @Published private(set) var rules: [PolicyRule] = []
+    @Published private(set) var paused = UserDefaults.standard.bool(forKey: SettingsKey.paused)
+    /// Last approval/control/pairing message for the user.
+    @Published var notice: String?
+    /// Set by a notification tap; RootView shows the approvals sheet.
+    @Published var openApprovalId: UUID?
 
     var activity: [OutboxRecord] { Array(records.prefix(10)) }
     var pendingCount: Int { records.filter { $0.status == .pending || $0.status == .sending }.count }
@@ -35,21 +74,18 @@ final class AppModel: ObservableObject {
 
     private let repository: any InstructionRepository
     private let coordinator: DeliveryCoordinator
-    private let auth: any AuthSession
     private let capture: any AudioCapture
     private let selector: TranscriberSelector
     private let appVersion: String
     private var activeService: (any TranscriptionService)?
     private var currentClientId: UUID?
     private var recordingTimeout: Task<Void, Never>?
-    private var decisionKeys: [String: UUID] = [:]
 
     init() {
         let fileURL = try? FileInstructionRepository.defaultFileURL()
         if fileURL == nil { VoxLog.event("outbox.no_file_url") }
         repository = FileInstructionRepository(fileURL: fileURL)
         coordinator = DeliveryCoordinator(repository: repository)
-        auth = KeychainAuthSession(service: "app.vox.watch")
         capture = AVAudioEngineCapture(maxDuration: Self.maxRecordingSeconds)
         #if DEBUG
         let mock: (any TranscriptionService)? = MockTranscriber()
@@ -62,7 +98,7 @@ final class AppModel: ObservableObject {
             SettingsKey.language: "auto",
             SettingsKey.preferLocalASR: true,
             SettingsKey.remoteAudioConsent: false,
-            SettingsKey.serverURL: "",
+            SettingsKey.serverURL: VoxBackend.defaultServerURL,
             SettingsKey.runnerHint: "",
         ])
     }
@@ -218,19 +254,60 @@ final class AppModel: ObservableObject {
     }
 
     func decide(_ approval: Approval, approve: Bool) async {
-        guard let api = makeAPI() else { return }
-        let decision = ApprovalDecision(decision: approve ? .approved : .denied, challengeToken: approval.challengeToken)
-        // Same key if the user retries the same decision.
-        let keyName = "\(approval.id.uuidString)-\(decision.decision.rawValue)"
-        let key = decisionKeys[keyName] ?? UUID()
-        decisionKeys[keyName] = key
+        if approve && approval.risk == "high" && !LAContext().canEvaluatePolicy(.deviceOwnerAuthentication, error: nil) {
+            notice = "Activa el código del reloj para aprobar acciones de alto riesgo"
+            haptic(.failure)
+            return
+        }
         do {
-            _ = try await api.decide(approvalId: approval.id, decision: decision, idempotencyKey: key)
+            try await VoxBackend.decide(approvalId: approval.id, fingerprint: approval.actionFingerprint, approve: approve)
             approvals.removeAll { $0.id == approval.id }
+            notice = nil
             haptic(.success)
         } catch {
             note(error)
+            notice = "No se pudo enviar la decisión (\(Self.code(error)))"
             haptic(.failure)
+        }
+    }
+
+    // MARK: Run controls (signed, best-effort)
+
+    func cancelRun(_ runId: UUID) async -> Bool {
+        guard let api = makeAPI() else { return false }
+        do {
+            let body = try await VoxBackend.signer().cancel(runId: runId)
+            try await api.cancelRun(runId: runId, body: body, idempotencyKey: UUID())
+            haptic(.success)
+            return true
+        } catch {
+            note(error)
+            haptic(.failure)
+            return false
+        }
+    }
+
+    func setPaused(_ value: Bool) async {
+        guard let api = makeAPI() else { return }
+        do {
+            let request = try await VoxBackend.signer().pause(value)
+            paused = try await api.setPaused(request).paused
+            UserDefaults.standard.set(paused, forKey: SettingsKey.paused)
+            notice = nil
+            haptic(.success)
+        } catch {
+            note(error)
+            notice = "No se pudo \(value ? "pausar" : "reanudar") (\(Self.code(error)))"
+            haptic(.failure)
+        }
+    }
+
+    func loadPolicy() async {
+        guard let api = makeAPI() else { return }
+        do {
+            rules = try await api.policy()
+        } catch {
+            note(error)
         }
     }
 
@@ -240,20 +317,57 @@ final class AppModel: ObservableObject {
         whistleStatus = await WhistleTranscriber.shared.availability()
     }
 
-    func saveToken(_ token: String) async {
-        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+    /// Exchanges the admin CLI code for a token and registers this watch's signing key.
+    func pair(code: String) async {
+        let code = PairingCode.normalize(code)
+        guard PairingCode.isValid(code), let api = makeAPI() else {
+            notice = "Código no válido"
+            return
+        }
         do {
-            try await auth.store(trimmed)
+            let key = try DeviceKey.loadOrCreate(service: VoxBackend.service)
+            let name = String(WKInterfaceDevice.current().name.prefix(64))
+            let paired = try await api.pair(PairRequest(code: code, publicKey: key.publicKeyX963Base64,
+                                                        name: name.isEmpty ? "Apple Watch" : name))
+            try await VoxBackend.auth.store(paired.token)
+            try await VoxBackend.deviceIdStore.store(paired.deviceId.uuidString.lowercased())
+            notice = "Reloj vinculado"
             connection = .unknown
+            haptic(.success)
+            await registerPushToken()
             await refresh()
+        } catch let error as APIError {
+            switch error {
+            case .unauthorized: notice = "Código no válido, usado o caducado"
+            case .rateLimited: notice = "Demasiados intentos. Espera 10 min."
+            default: notice = "No se pudo vincular (\(error.code))"
+            }
+            haptic(.failure)
         } catch {
+            // Most likely no watch passcode: the signing key is stored WhenPasscodeSetThisDeviceOnly.
+            notice = "Activa el código del reloj para vincular"
             haptic(.failure)
         }
     }
 
+    /// Sends the stored APNs token; called when APNs registers and after pairing.
+    func registerPushToken() async {
+        guard let hex = UserDefaults.standard.string(forKey: SettingsKey.pushToken), let api = makeAPI() else { return }
+        #if DEBUG
+        let environment = "development"
+        #else
+        let environment = "production"
+        #endif
+        do {
+            try await api.registerPushToken(PushTokenRequest(token: hex, environment: environment))
+        } catch {
+            note(error)
+        }
+    }
+
     func logout() async {
-        try? await auth.clear()
+        try? await VoxBackend.auth.clear()
+        try? await VoxBackend.deviceIdStore.clear()
         connection = .authRequired
     }
 
@@ -272,8 +386,7 @@ final class AppModel: ObservableObject {
     }
 
     private func makeAPI() -> (any WatchAPIClient)? {
-        guard let url = URL(string: UserDefaults.standard.string(forKey: SettingsKey.serverURL) ?? ""),
-              let api = try? URLSessionWatchAPIClient(baseURL: url, auth: auth) else {
+        guard let api = VoxBackend.client() else {
             connection = .notConfigured
             return nil
         }

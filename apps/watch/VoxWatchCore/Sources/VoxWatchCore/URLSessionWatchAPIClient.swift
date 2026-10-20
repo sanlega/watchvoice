@@ -49,11 +49,51 @@ public struct URLSessionWatchAPIClient: WatchAPIClient {
         try await send("GET", baseURL.appendingPathComponent("projects"))
     }
 
-    private func send<T: Decodable>(_ method: String, _ url: URL, body: Data? = nil, idempotencyKey: UUID? = nil) async throws -> T {
-        let token = try await auth.token()
+    public func pair(_ request: PairRequest) async throws -> PairResponse {
+        try await send("POST", baseURL.appendingPathComponent("devices/pair"), body: VoxJSON.encoder().encode(request), authorized: false)
+    }
+
+    public func registerPushToken(_ request: PushTokenRequest) async throws {
+        _ = try await data("PUT", baseURL.appendingPathComponent("devices/me/push-token"), body: VoxJSON.encoder().encode(request))
+    }
+
+    public func cancelRun(runId: UUID, body: SignedBody, idempotencyKey: UUID) async throws {
+        let url = baseURL.appendingPathComponent("runs/\(runId.uuidString.lowercased())/cancel")
+        _ = try await data("POST", url, body: VoxJSON.encoder().encode(body), idempotencyKey: idempotencyKey)
+    }
+
+    public func setPaused(_ request: PauseRequest) async throws -> PauseResult {
+        try await send("POST", baseURL.appendingPathComponent("pause"), body: VoxJSON.encoder().encode(request))
+    }
+
+    public func policy() async throws -> [PolicyRule] {
+        let body = try await data("GET", baseURL.appendingPathComponent("policy"))
+        do {
+            return try VoxJSON.literalKeysDecoder().decode([PolicyRule].self, from: body)
+        } catch {
+            throw APIError.decoding("PolicyRule")
+        }
+    }
+
+    private func send<T: Decodable>(_ method: String, _ url: URL, body: Data? = nil, idempotencyKey: UUID? = nil,
+                                    authorized: Bool = true) async throws -> T {
+        let raw = try await data(method, url, body: body, idempotencyKey: idempotencyKey, authorized: authorized)
+        do {
+            return try VoxJSON.decoder().decode(T.self, from: raw)
+        } catch {
+            throw APIError.decoding(String(describing: T.self))
+        }
+    }
+
+    /// Performs the request and maps non-2xx to APIError; returns the raw body.
+    private func data(_ method: String, _ url: URL, body: Data? = nil, idempotencyKey: UUID? = nil,
+                      authorized: Bool = true) async throws -> Data {
         var request = URLRequest(url: url, timeoutInterval: 20)
         request.httpMethod = method
-        request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
+        if authorized {
+            let token = try await auth.token()
+            request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
+        }
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if let body {
             request.httpBody = body
@@ -70,11 +110,7 @@ public struct URLSessionWatchAPIClient: WatchAPIClient {
             throw APIError.from(status: http.statusCode, retryAfter: http.value(forHTTPHeaderField: "Retry-After"), problemCode: problemCode)
                 ?? .unexpected(status: http.statusCode)
         }
-        do {
-            return try VoxJSON.decoder().decode(T.self, from: data)
-        } catch {
-            throw APIError.decoding(String(describing: T.self))
-        }
+        return data
     }
 
     private func perform(_ request: URLRequest) async throws -> (Data, URLResponse) {

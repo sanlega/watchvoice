@@ -15,6 +15,12 @@ public struct MockAudioCapture: AudioCapture {
 /// Scripted API. Each submit consumes the next result; when the script is empty it succeeds.
 public actor MockWatchAPIClient: WatchAPIClient {
     public private(set) var submittedKeys: [UUID] = []
+    public private(set) var decisions: [(approvalId: UUID, body: ApprovalDecision, key: UUID)] = []
+    public private(set) var cancels: [(runId: UUID, body: SignedBody)] = []
+    public private(set) var pauses: [PauseRequest] = []
+    public private(set) var pushTokens: [PushTokenRequest] = []
+    /// When set, the next decide/cancel/pause throws it.
+    private var nextControlError: APIError?
     private var submitResults: [Result<InstructionReceipt, APIError>]
     private var instructions: [UUID: Instruction]
     private var pendingApprovals: [Approval]
@@ -54,10 +60,44 @@ public actor MockWatchAPIClient: WatchAPIClient {
 
     public func decide(approvalId: UUID, decision: ApprovalDecision, idempotencyKey: UUID) async throws -> Approval {
         guard let index = pendingApprovals.firstIndex(where: { $0.id == approvalId }) else { throw APIError.notFound }
+        try throwControlError()
+        decisions.append((approvalId, decision, idempotencyKey))
         pendingApprovals[index].state = decision.decision.rawValue
-        pendingApprovals[index].challengeToken = nil
         return pendingApprovals[index]
     }
 
     public func projects() async throws -> [Project] { [] }
+
+    public func pair(_ request: PairRequest) async throws -> PairResponse {
+        guard PairingCode.isValid(request.code) else { throw APIError.unauthorized }
+        return PairResponse(deviceId: UUID(), token: "vox_mock")
+    }
+
+    public func registerPushToken(_ request: PushTokenRequest) async throws {
+        pushTokens.append(request)
+    }
+
+    public func cancelRun(runId: UUID, body: SignedBody, idempotencyKey: UUID) async throws {
+        try throwControlError()
+        cancels.append((runId, body))
+    }
+
+    public func setPaused(_ request: PauseRequest) async throws -> PauseResult {
+        try throwControlError()
+        pauses.append(request)
+        return PauseResult(paused: request.paused, cancelledRuns: 0)
+    }
+
+    public func policy() async throws -> [PolicyRule] { [] }
+
+    public func setNextControlError(_ error: APIError?) {
+        nextControlError = error
+    }
+
+    private func throwControlError() throws {
+        if let error = nextControlError {
+            nextControlError = nil
+            throw error
+        }
+    }
 }

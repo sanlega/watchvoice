@@ -60,7 +60,7 @@ extension AppModel.Connection {
         case .unknown: return "Comprobando…"
         case .online: return "Conectado"
         case .offline: return "Sin conexión"
-        case .authRequired: return "Inicia sesión en Ajustes"
+        case .authRequired: return "Vincula el reloj en Ajustes"
         case .notConfigured: return "Configura el servidor"
         }
     }

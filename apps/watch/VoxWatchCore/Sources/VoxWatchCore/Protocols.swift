@@ -86,8 +86,15 @@ public protocol WatchAPIClient: Sendable {
     func submit(_ instruction: NewInstruction, idempotencyKey: UUID) async throws -> InstructionReceipt
     func instruction(id: UUID) async throws -> Instruction
     func approvals() async throws -> [Approval]
+    /// `decision` is signed by `DeviceSigner`. Use a new Idempotency-Key per tap.
     func decide(approvalId: UUID, decision: ApprovalDecision, idempotencyKey: UUID) async throws -> Approval
     func projects() async throws -> [Project]
+    /// No auth: exchanges a one-time code for a device token.
+    func pair(_ request: PairRequest) async throws -> PairResponse
+    func registerPushToken(_ request: PushTokenRequest) async throws
+    func cancelRun(runId: UUID, body: SignedBody, idempotencyKey: UUID) async throws
+    func setPaused(_ request: PauseRequest) async throws -> PauseResult
+    func policy() async throws -> [PolicyRule]
 }
 
 public protocol AuthSession: Sendable {

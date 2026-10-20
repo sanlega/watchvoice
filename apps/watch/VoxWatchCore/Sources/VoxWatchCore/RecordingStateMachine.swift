@@ -23,6 +23,8 @@ public enum FlowState: Sendable, Equatable {
     case needsReview(Instruction)
     case awaitingApproval(Instruction)
     case captured(Instruction)
+    /// A voice policy change took effect.
+    case applied(Instruction)
     case failed(FlowError)
 }
 
@@ -81,7 +83,7 @@ public enum RecordingStateMachine {
     private static func trackedInstructionId(_ state: FlowState) -> UUID? {
         switch state {
         case .received(let receipt): return receipt.instructionId
-        case .taskStarted(let i), .needsReview(let i), .awaitingApproval(let i), .captured(let i): return i.id
+        case .taskStarted(let i), .needsReview(let i), .awaitingApproval(let i), .captured(let i), .applied(let i): return i.id
         default: return nil
         }
     }
@@ -93,6 +95,7 @@ public enum RecordingStateMachine {
         case .needsClarification: return .needsReview(instruction)
         case .awaitingApproval: return .awaitingApproval(instruction)
         case .captured: return .captured(instruction)
+        case .applied: return .applied(instruction)
         case .failed, .cancelled: return .failed(.server(code: instruction.errorCode))
         case .queued, .routing, .unknown: return state
         }

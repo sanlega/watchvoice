@@ -1,6 +1,6 @@
 # VOX Agent Watch (watchOS)
 
-An independent watchOS app (no iOS companion). You speak or dictate an instruction, review the transcript, and send it to `POST /v1/instructions` (contract: `contracts/openapi.yaml` v0.3). The app then follows routing and T3 Code run progress by polling `GET /v1/instructions/{id}` while it is in the foreground.
+An independent watchOS app (no iOS companion). You speak or dictate an instruction, review the transcript, and send it to `POST /v1/instructions` (contract: `contracts/openapi.yaml` v0.4). The app then follows routing and T3 Code run progress by polling `GET /v1/instructions/{id}` while it is in the foreground.
 
 ## Layout
 
@@ -26,8 +26,24 @@ cd apps/watch/VoxWatchCore && swift test
 The tests decode every contract fixture (copies live in `Tests/VoxWatchCoreTests/Fixtures/`; re-copy them when `contracts/fixtures` changes). They also cover:
 
 - the state machine: a 202 receipt never means "task started"
+- canonical JSON (byte-equal to Python `json.dumps(..., sort_keys=True, separators=(",", ":"), ensure_ascii=False)`), signatures verifying with the public key, and mock decide/cancel/pause flows
 - delivery: retries reuse the same Idempotency-Key, 409/413/422 fail permanently, 429 honours Retry-After, an offline outbox delivers once back online, 401 halts the queue
 - the Whistle stub, the ASR selector and `APIError` retriability
+
+## Pairing
+
+1. On the server: `python -m app.admin pair` (add `--replace` to replace an existing watch). It prints an 8-character code (no 0/O/1/I/L), single use, valid 10 min, invalidated after 5 failures.
+2. On the watch: set a **watch passcode** first. The signing key is stored `WhenPasscodeSetThisDeviceOnly`, so pairing fails without one.
+3. Ajustes → Vincular → type the code → Vincular. The server URL defaults to `https://vox.santi.tools/v1`; change it under Ajustes → Avanzado.
+4. The watch sends its P-256 public key (Secure Enclave; a software key only where the enclave is unavailable, e.g. the simulator) and stores the returned token and `device_id` in the Keychain.
+
+Approvals, "Parar" (cancel run) and "Pausar todo" are signed with that key over canonical JSON (sorted keys, no spaces, UTF-8; see `CanonicalJSON`), matching `backend/app/devicesig.py`. The clock must be within ±2 min of the server. High-risk approvals also need a watch passcode at tap time.
+
+## Push notifications
+
+- Needs a **paid Apple Developer Program** membership: free teams cannot sign the `aps-environment` entitlement (set in `project.yml`, generated into `VoxWatch/VoxWatch.entitlements`).
+- The backend needs an APNs auth key: `VOX_APNS_KEY_PATH` (.p8), `VOX_APNS_KEY_ID`, `VOX_APNS_TEAM_ID`, `VOX_APNS_TOPIC=app.vox.watch`; the watch only sends its token to `PUT /v1/devices/me/push-token` (`development` in Debug, `production` in Release).
+- Categories: `VOX_APPROVAL_LOW` [Aprobar (first, so Double Tap approves), Rechazar] and `VOX_APPROVAL_HIGH` [Revisar, opens the app]. Aprobar/Rechazar run in the background and make exactly one signed call; on failure the watch posts a local "No se pudo aprobar, toca para reintentar" notification.
 
 ## Enable Whistle (experimental, on-device ASR)
 
@@ -43,14 +59,15 @@ Without `VOX_WHISTLE`, `WhistleTranscriber` is a stub. It reports `blocked` and 
 
 ## Privacy
 
-- The device token is stored in the Keychain only (`AfterFirstUnlockThisDeviceOnly`).
+- The device token and `device_id` are stored in the Keychain only (`AfterFirstUnlockThisDeviceOnly`); the signing key is `WhenPasscodeSetThisDeviceOnly` and never leaves the watch.
 - The outbox is a JSON file in Application Support, written atomically with `completeUntilFirstUserAuthentication`.
 - Logs contain ids, statuses and error codes only, never transcripts, agent summaries or tokens.
 - Audio stays in memory and is dropped once it has been transcribed.
 
 ## Validation status
 
-- **NOT compiled.** These files were written on Windows with no macOS, Xcode or Swift toolchain. Neither `swift test` nor an Xcode build has been run yet.
+- **NOT compiled.** These files were written on Windows with no macOS, Xcode or Swift toolchain. Neither `swift test` nor an Xcode build has been run yet. This includes the v0.4 pairing, signing and push code.
+- Push, notification actions and Double Tap have not been tried on a device.
 - **Whistle hardware validation is BLOCKED.** It has not run on a device. These needle details are unverified:
   - whether `needle_load` copies or references the model buffer
   - how `needle_transcribe` reports its output size

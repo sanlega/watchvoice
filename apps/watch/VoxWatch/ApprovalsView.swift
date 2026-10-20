@@ -6,6 +6,11 @@ struct ApprovalsView: View {
 
     var body: some View {
         List {
+            if let notice = model.notice {
+                Text(notice)
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            }
             if model.approvals.isEmpty {
                 Text("Nada pendiente")
             }
@@ -18,26 +23,39 @@ struct ApprovalsView: View {
     }
 }
 
+/// One tap to approve, signed by the watch key (ADR-0001 §5). High risk also needs a watch passcode (checked in AppModel).
 struct ApprovalRow: View {
     @EnvironmentObject private var model: AppModel
     let approval: Approval
-    @State private var confirming = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             VStack(alignment: .leading, spacing: 2) {
+                if approval.agentProvided {
+                    Text("Escrito por el agente")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
                 Text(approval.actionSummary)
-                    .font(.headline)
+                    .font(approval.kind == "policy_change" ? Font.title3.bold() : Font.headline)
                 Text(approval.capability)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                if let runner = approval.runner {
+                    Text("Máquina: \(runner)")
+                        .font(.caption2)
+                }
+                if approval.runnerTrust == "cooperative" {
+                    Text("PC: sin aislamiento")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
                 Text("Riesgo: \(riskLabel)")
                     .font(.caption)
                     .foregroundStyle(riskColor)
-                if let expiresAt = approval.expiresAt {
-                    Text("Caduca \(expiresAt, style: .relative)")
-                        .font(.caption2)
-                }
+                Text(approval.expiresAt, style: .timer)
+                    .font(.caption2)
+                    .accessibilityLabel(Text("Caduca \(approval.expiresAt, style: .relative)"))
             }
             .accessibilityElement(children: .combine)
 
@@ -47,26 +65,14 @@ struct ApprovalRow: View {
                 }
                 .buttonStyle(.bordered)
                 Button("Aprobar") {
-                    if approval.risk == "high" {
-                        confirming = true
-                    } else {
-                        Task { await model.decide(approval, approve: true) }
-                    }
+                    Task { await model.decide(approval, approve: true) }
                 }
                 .buttonStyle(.bordered)
                 .tint(.green)
-                .accessibilityHint(approval.risk == "high" ? "Pide confirmación por ser de riesgo alto" : "")
+                .accessibilityHint(approval.risk == "high" ? "Requiere código de desbloqueo en el reloj" : "")
             }
-            .disabled(isExpired)
+            .disabled(approval.expiresAt < Date())
         }
-        .confirmationDialog("¿Aprobar acción de riesgo alto?", isPresented: $confirming) {
-            Button("Aprobar") { Task { await model.decide(approval, approve: true) } }
-            Button("Cancelar", role: .cancel) {}
-        }
-    }
-
-    private var isExpired: Bool {
-        (approval.expiresAt ?? .distantFuture) < Date()
     }
 
     private var riskLabel: String {

@@ -76,10 +76,41 @@ final class FixtureDecodingTests: XCTestCase {
 
     func testPendingApproval() throws {
         let value = try decode(Approval.self, "approval.pending")
+        XCTAssertEqual(value.kind, "action")
         XCTAssertEqual(value.state, "pending")
         XCTAssertEqual(value.risk, "high")
-        XCTAssertEqual(value.challengeToken, "opaque-challenge-token")
-        XCTAssertNotNil(value.expiresAt)
+        XCTAssertFalse(value.agentProvided)
+        XCTAssertEqual(value.actionFingerprint.count, 64)
+        XCTAssertEqual(value.runner, "vps")
+        XCTAssertEqual(value.runnerTrust, "isolated")
+        XCTAssertNotNil(value.runId)
+    }
+
+    func testPolicyChangeApproval() throws {
+        let value = try decode(Approval.self, "approval.policy_change")
+        XCTAssertEqual(value.kind, "policy_change")
+        XCTAssertNil(value.runId)
+        XCTAssertNil(value.projectId)
+        XCTAssertEqual(value.actionSummary, "Bypass · vps · 2 h")
+    }
+
+    func testDecisionRequestDecodes() throws {
+        let value = try decode(ApprovalDecision.self, "decision.request")
+        XCTAssertEqual(value.decision, .approved)
+        XCTAssertEqual(value.ts, "2026-10-20T10:01:00+00:00")
+        XCTAssertEqual(value.actionFingerprint.count, 64)
+    }
+
+    func testPolicyRuleKeepsCapabilityKeysLiteral() throws {
+        let json = #"[{"id":"5b6c7d8e-9f0a-4b1c-8d2e-4f5a6b7c8d9e","runner":"vps","project":null,"mode":"granular","effects":{"repo.merge_protected":"ask"},"source":"voice","expires_at":"2026-10-20T12:00:00Z"}]"#
+        let rules = try VoxJSON.literalKeysDecoder().decode([PolicyRule].self, from: Data(json.utf8))
+        XCTAssertEqual(rules.first?.effects, ["repo.merge_protected": "ask"])
+        XCTAssertNotNil(rules.first?.expiresAt)
+    }
+
+    func testAppliedStatus() throws {
+        XCTAssertEqual(try VoxJSON.decoder().decode(InstructionStatus.self, from: Data("\"applied\"".utf8)), .applied)
+        XCTAssertTrue(InstructionStatus.applied.isFinal)
     }
 
     func testProblem409() throws {

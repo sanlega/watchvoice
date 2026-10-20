@@ -11,17 +11,23 @@ struct ActivityView: View {
             }
             ForEach(model.activity) { record in
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(record.instruction.text)
-                        .font(.footnote)
-                        .lineLimit(2)
-                    Text(record.statusLabel)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    if record.remote?.status == .dispatched, let progress = record.remote?.progress {
-                        RunProgressView(progress: progress)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(record.instruction.text)
+                            .font(.footnote)
+                            .lineLimit(2)
+                        Text(record.statusLabel)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        if record.remote?.status == .dispatched, let progress = record.remote?.progress {
+                            RunProgressView(progress: progress)
+                        }
+                    }
+                    .accessibilityElement(children: .combine)
+                    if let remote = record.remote, remote.status == .dispatched, let runId = remote.agentRunId,
+                       let progress = remote.progress, !progress.runState.isTerminal {
+                        StopRunButton(runId: runId)
                     }
                 }
-                .accessibilityElement(children: .combine)
             }
         }
         .navigationTitle("Actividad")
@@ -42,7 +48,9 @@ extension OutboxRecord {
                 return "Revisión requerida"
             case .awaitingApproval?: return "Requiere aprobación"
             case .captured?: return "Capturado"
-            case .failed?, .cancelled?: return "Error"
+            case .applied?: return "Regla aplicada"
+            case .failed?: return remote?.errorCode == "policy_denied" ? "Bloqueado por política" : "Error"
+            case .cancelled?: return "Error"
             default: return "Recibido"
             }
         }

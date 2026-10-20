@@ -9,10 +9,12 @@ public struct KeychainAuthSession: AuthSession {
     }
 
     private let service: String
-    private let account = "device-token"
+    private let account: String
 
-    public init(service: String) {
+    /// Use `account: "device-id"` for the paired device id (same storage, not a secret).
+    public init(service: String, account: String = "device-token") {
         self.service = service
+        self.account = account
     }
 
     private var baseQuery: [String: Any] {
