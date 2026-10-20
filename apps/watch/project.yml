@@ -1,0 +1,103 @@
+# XcodeGen spec for the independent watchOS app. Generate with `xcodegen` from apps/watch.
+#
+# Configurations:
+#   Debug / Release                  -> no Whistle; on-device ASR stub reports "blocked",
+#                                       fallback is system dictation. Simulator works.
+#   Debug-Whistle / Release-Whistle  -> EXPERIMENTAL: defines VOX_WHISTLE and links
+#                                       Vendor/needle/libneedle.a (+ libc++), fetched by scripts/fetch-needle.sh.
+#                                       libneedle.a is watchOS DEVICE only (arm64_32 + arm64, no simulator
+#                                       slice) and requires watchOS 26.2, so these configs raise the
+#                                       deployment target to 26.2 and CANNOT build/link for the simulator.
+name: VoxWatch
+options:
+  bundleIdPrefix: app.vox
+  deploymentTarget:
+    watchOS: "10.0"
+  createIntermediateGroups: true
+configs:
+  Debug: debug
+  Release: release
+  Debug-Whistle: debug
+  Release-Whistle: release
+settings:
+  base:
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  # Same sources as the VoxWatchCore Swift package (used on macOS for `swift test`).
+  # Built here as a framework so the Whistle configs can apply VOX_WHISTLE + the needle link settings.
+  VoxWatchCore:
+    type: framework
+    platform: watchOS
+    sources:
+      - path: VoxWatchCore/Sources/VoxWatchCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.vox.watch.core
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "6.0"
+        SKIP_INSTALL: YES
+      configs:
+        Debug-Whistle: &coreWhistle
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) VOX_WHISTLE"
+          # CNeedle/module.modulemap exposes Vendor/needle/needle.h to Swift as `import CNeedle`.
+          SWIFT_INCLUDE_PATHS: "$(inherited) $(PROJECT_DIR)/CNeedle"
+          OTHER_LDFLAGS: "$(inherited) $(PROJECT_DIR)/Vendor/needle/libneedle.a -lc++"
+          WATCHOS_DEPLOYMENT_TARGET: "26.2"
+          SUPPORTED_PLATFORMS: watchos
+        Release-Whistle: *coreWhistle
+
+  VoxWatch:
+    type: application
+    platform: watchOS
+    sources:
+      - path: VoxWatch
+    dependencies:
+      - target: VoxWatchCore
+    info:
+      path: VoxWatch/Info.plist
+      properties:
+        CFBundleDisplayName: VOX
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        WKApplication: true
+        WKWatchOnly: true
+        WKRunsIndependentlyOfCompanionApp: true
+        NSMicrophoneUsageDescription: "VOX usa el micrófono solo mientras grabas una instrucción para tus agentes. El audio no sale del reloj salvo que lo autorices en Ajustes."
+    # APNs (ADR-0001 §6). Requires a PAID Apple Developer Program team: free/personal teams cannot
+    # sign aps-environment. Distribution export normally re-signs it as production (verify on first upload).
+    entitlements:
+      path: VoxWatch/VoxWatch.entitlements
+      properties:
+        aps-environment: development
+    attributes:
+      SystemCapabilities:
+        com.apple.Push:
+          enabled: 1
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.vox.watch
+        SWIFT_VERSION: "5.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+        # The model-embed script below reads Vendor/ outside the declared inputs.
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+      configs:
+        Debug-Whistle: &appWhistle
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) VOX_WHISTLE"
+          WATCHOS_DEPLOYMENT_TARGET: "26.2"
+          SUPPORTED_PLATFORMS: watchos
+        Release-Whistle: *appWhistle
+    postBuildScripts:
+      - name: Embed Whistle model (VOX_WHISTLE only)
+        basedOnDependencyAnalysis: false
+        script: |
+          case " ${SWIFT_ACTIVE_COMPILATION_CONDITIONS} " in
+            *" VOX_WHISTLE "*)
+              MODEL="${PROJECT_DIR}/Vendor/needle/whistle.cact"
+              if [ ! -f "$MODEL" ]; then
+                echo "error: $MODEL missing. Run scripts/fetch-needle.sh"
+                exit 1
+              fi
+              cp "$MODEL" "${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/whistle.cact"
+              ;;
+          esac

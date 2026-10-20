@@ -1,0 +1,45 @@
+# VOX backend on the VPS (ADR-0001 §13). Run as the dedicated `vox` OS user, never the T3 runner user.
+# Public ingress only through the existing Cloudflare Tunnel -> 127.0.0.1:8080 (hostname vox.santi.tools).
+name: vox
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: vox
+      POSTGRES_USER: vox
+      POSTGRES_PASSWORD_FILE: /run/secrets/pg_password
+    secrets: [pg_password]
+    volumes: [pgdata:/var/lib/postgresql/data]   # no published port: only reachable from this compose network
+    healthcheck: {test: ["CMD-SHELL", "pg_isready -U vox -d vox"], interval: 5s, retries: 20}
+    restart: unless-stopped
+
+  migrate:                        # separate step: a failed migration never takes the running stack down
+    image: postgres:16-alpine
+    profiles: [migrate]
+    environment: {PGHOST: postgres, PGUSER: vox, PGDATABASE: vox, PGPASSWORD_FILE: /run/secrets/pg_password}
+    secrets: [pg_password]
+    volumes: ["../docs/vox-agent-spec/schema.sql:/migrations/001_schema.sql:ro", "../backend/migrations:/migrations/up:ro",
+              "./migrate.sh:/migrate.sh:ro"]
+    entrypoint: ["sh", "/migrate.sh"]
+    depends_on: {postgres: {condition: service_healthy}}
+
+  api:
+    image: vox-api:${VOX_TAG:?set VOX_TAG to the git tag being deployed}
+    build: {context: .., dockerfile: backend/Dockerfile, target: runtime}
+    env_file: [/etc/vox/vox.env]  # 600, owned by vox: DATABASE_URL, secrets, APNs paths
+    ports: ["127.0.0.1:8080:8080"]
+    depends_on: {postgres: {condition: service_healthy}}
+    restart: unless-stopped
+
+  worker:
+    image: vox-api:${VOX_TAG}
+    command: ["python", "-m", "app.worker"]
+    env_file: [/etc/vox/vox.env]
+    volumes: ["/etc/vox/apns:/run/apns:ro"]  # put AuthKey.p8 here; VOX_APNS_KEY_PATH=/run/apns/AuthKey.p8
+    depends_on: {postgres: {condition: service_healthy}}
+    restart: unless-stopped
+
+secrets:
+  pg_password: {file: /etc/vox/pg_password}
+volumes:
+  pgdata: {}

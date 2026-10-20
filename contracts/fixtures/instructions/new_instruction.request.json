@@ -1,0 +1,9 @@
+{
+  "client_instruction_id": "c1fd810c-5b24-47a9-acb5-81702daf8126",
+  "source": "apple_watch",
+  "text": "En Musiquillas añade modo multijugador",
+  "language": "es",
+  "project_hint": null,
+  "transcription": {"engine": "mock", "model_version": null, "on_device": true, "duration_ms": 7400},
+  "client": {"app_version": "0.1.0", "platform": "watchos"}
+}

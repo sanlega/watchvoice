@@ -1,0 +1,470 @@
+openapi: 3.1.0
+info:
+  title: VOX Agent API
+  version: 0.6.0
+  description: >-
+    Self-hosted voice-to-project-agent API. Mutations are idempotent.
+    v0.3.0 is purely additive over v0.2.0: transcript-first `/instructions` for the
+    Apple Watch (and other text clients), optional fields on Approval, optional
+    `challenge_token` on approval decisions. All v0.2.0 operations are unchanged.
+    v0.4.0 (ADR-0001): policy rules, device-signed approvals (replaces the unreleased
+    challenge_token), pairing, push registration, agent approval requests, signed cancel, pause.
+    v0.5.0: routing by a language model (TypeSafe Jev) selects project, machine and coding agent;
+    RunProgress.agent.
+    v0.6.0: reply_to_run_id continues an existing T3 conversation; intents open_issue and analyze_bug;
+    run.message.v1 runner event.
+servers:
+  - url: https://vox.example.invalid/v1
+security:
+  - BearerAuth: []
+tags:
+  - name: Devices
+  - name: Recordings
+  - name: Projects
+  - name: Tasks
+  - name: Runs
+  - name: Approvals
+  - name: Instructions
+paths:
+  /instructions:
+    post:
+      tags: [Instructions]
+      summary: Submit a transcribed instruction (transcript-first). 202 only after durable persistence.
+      description: >-
+        Same Idempotency-Key + same body => same instruction (202, header Idempotent-Replayed: true).
+        Same key or same client_instruction_id with a different body => 409.
+        Routing and task creation happen asynchronously; poll GET /instructions/{id}.
+        The text is untrusted user content and can never change server-side policy.
+      security: [{DeviceAuth: []}]
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/NewInstruction'}}}
+      responses:
+        '202': {description: Instruction durably stored, content: {application/json: {schema: {$ref: '#/components/schemas/InstructionReceipt'}}}}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+  /instructions/{instruction_id}:
+    get:
+      tags: [Instructions]
+      security: [{DeviceAuth: []}]
+      parameters: [{name: instruction_id, in: path, required: true, schema: {type: string, format: uuid}}]
+      responses:
+        '200': {description: Instruction state, content: {application/json: {schema: {$ref: '#/components/schemas/Instruction'}}}}
+        '401': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+  /runs/{run_id}/events:
+    post:
+      tags: [Runs]
+      summary: Progress callback from the executing T3 Code run (v0.3). Moves the run forward only.
+      security: [{RunCallbackAuth: []}]
+      parameters: [{$ref: '#/components/parameters/RunId'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/RunEventIn'}}}
+      responses:
+        '204': {description: Event recorded}
+        '401': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+  /devices/me:
+    get:
+      tags: [Devices]
+      summary: Get registered device identity and configuration
+      security: [{DeviceAuth: []}]
+      responses:
+        '200': {description: Device configuration, content: {application/json: {schema: {$ref: '#/components/schemas/Device'}}}}
+  /devices/recordings/{recording_id}:
+    put:
+      tags: [Recordings]
+      summary: Upload one final recording; retries with same ID and SHA are safe
+      security: [{DeviceAuth: []}]
+      parameters:
+        - $ref: '#/components/parameters/RecordingId'
+        - {name: X-Content-SHA256, in: header, required: true, schema: {type: string, pattern: '^[0-9a-f]{64}$'}}
+        - {name: X-Duration-Ms, in: header, required: true, schema: {type: integer, minimum: 1, maximum: 90000}}
+      requestBody:
+        required: true
+        content:
+          audio/wav:
+            schema: {type: string, format: binary}
+      responses:
+        '201': {description: Recording durably stored, content: {application/json: {schema: {$ref: '#/components/schemas/RecordingReceipt'}}}}
+        '200': {description: Exact replay, content: {application/json: {schema: {$ref: '#/components/schemas/RecordingReceipt'}}}}
+        '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+  /recordings:
+    get:
+      tags: [Recordings]
+      parameters: [{$ref: '#/components/parameters/Cursor'}, {$ref: '#/components/parameters/Limit'}]
+      responses:
+        '200': {description: Recordings, content: {application/json: {schema: {type: object, required: [items], properties: {items: {type: array, items: {$ref: '#/components/schemas/Recording'}}, next_cursor: {type: [string, 'null']}}}}}}
+  /recordings/{recording_id}:
+    get:
+      tags: [Recordings]
+      parameters: [{$ref: '#/components/parameters/RecordingId'}]
+      responses:
+        '200': {description: Recording state, content: {application/json: {schema: {$ref: '#/components/schemas/Recording'}}}}
+        '404': {$ref: '#/components/responses/Problem'}
+  /projects:
+    get:
+      tags: [Projects]
+      responses:
+        '200': {description: Projects, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Project'}}}}}
+    post:
+      tags: [Projects]
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/NewProject'}}}
+      responses:
+        '201': {description: Project created, content: {application/json: {schema: {$ref: '#/components/schemas/Project'}}}}
+        '409': {$ref: '#/components/responses/Problem'}
+  /projects/{project_id}:
+    get:
+      tags: [Projects]
+      parameters: [{$ref: '#/components/parameters/ProjectId'}]
+      responses:
+        '200': {description: Project, content: {application/json: {schema: {$ref: '#/components/schemas/Project'}}}}
+  /routing-decisions/{decision_id}/resolve:
+    post:
+      tags: [Tasks]
+      summary: Owner manually confirms or corrects a project assignment
+      parameters:
+        - {name: decision_id, in: path, required: true, schema: {type: string, format: uuid}}
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, required: [project_id], properties: {project_id: {type: string, format: uuid}, intent: {type: string}}}}}
+      responses:
+        '200': {description: Routed decision resolved, content: {application/json: {schema: {$ref: '#/components/schemas/Task'}}}}
+        '409': {$ref: '#/components/responses/Problem'}
+  /tasks:
+    get:
+      tags: [Tasks]
+      parameters: [{$ref: '#/components/parameters/Cursor'}, {$ref: '#/components/parameters/Limit'}]
+      responses:
+        '200': {description: Tasks, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Task'}}}}}
+    post:
+      tags: [Tasks]
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/NewTask'}}}
+      responses:
+        '201': {description: Task, content: {application/json: {schema: {$ref: '#/components/schemas/Task'}}}}
+  /tasks/{task_id}:
+    get:
+      tags: [Tasks]
+      parameters: [{$ref: '#/components/parameters/TaskId'}]
+      responses:
+        '200': {description: Task details, content: {application/json: {schema: {$ref: '#/components/schemas/Task'}}}}
+  /tasks/{task_id}/runs:
+    post:
+      tags: [Runs]
+      parameters: [{$ref: '#/components/parameters/TaskId'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, required: [executor], properties: {executor: {type: string}, retry_of_run_id: {type: [string, 'null'], format: uuid}}}}}
+      responses:
+        '201': {description: Run queued, content: {application/json: {schema: {$ref: '#/components/schemas/Run'}}}}
+  /runs/{run_id}:
+    get:
+      tags: [Runs]
+      parameters: [{$ref: '#/components/parameters/RunId'}]
+      responses:
+        '200': {description: Run, content: {application/json: {schema: {$ref: '#/components/schemas/Run'}}}}
+  /runs/{run_id}/cancel:
+    post:
+      tags: [Runs]
+      summary: 'v0.4: device-signed {action: cancel_run, run_id, device_id, ts}; best-effort stop on the runner'
+      parameters: [{$ref: '#/components/parameters/RunId'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/SignedBody'}}}
+      responses:
+        '202': {description: Cancellation requested}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+  /runs/{run_id}/events:
+    get:
+      tags: [Runs]
+      parameters: [{$ref: '#/components/parameters/RunId'}, {$ref: '#/components/parameters/Cursor'}]
+      responses:
+        '200': {description: Run event stream snapshot, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/RunEvent'}}}}}
+  /approvals:
+    get:
+      tags: [Approvals]
+      parameters: [{name: status, in: query, required: false, schema: {type: string, enum: [pending, approved, denied, expired, cancelled]}}]
+      responses:
+        '200': {description: Pending approvals, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Approval'}}}}}
+  /approvals/{approval_id}/decision:
+    post:
+      tags: [Approvals]
+      summary: One-tap decision signed by the watch's Secure Enclave key (ADR-0001 §5)
+      description: >-
+        Signed message = canonical JSON (sorted keys, no spaces) of
+        {approval_id, action_fingerprint, decision, device_id, ts}; ECDSA P-256/SHA-256, DER, base64.
+        |now - ts| <= 2 min. Same decision again = 200 replay; a different decision afterwards = 409.
+      parameters:
+        - {name: approval_id, in: path, required: true, schema: {type: string, format: uuid}}
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/ApprovalDecision'}}}
+      responses:
+        '200': {description: Approval updated, content: {application/json: {schema: {$ref: '#/components/schemas/Approval'}}}}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+  /devices/pair:
+    post:
+      tags: [Devices]
+      summary: Exchange a one-time pairing code (admin CLI) for a device token; registers the signing key
+      security: []
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/PairIn'}}}
+      responses:
+        '201': {description: Paired, content: {application/json: {schema: {$ref: '#/components/schemas/PairOut'}}}}
+        '401': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+  /devices/me/push-token:
+    put:
+      tags: [Devices]
+      security: [{DeviceAuth: []}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/PushTokenIn'}}}
+      responses:
+        '204': {description: Stored}
+  /runs/{run_id}/approval-requests:
+    post:
+      tags: [Runs]
+      summary: The running agent asks for a capability. Bypass scope -> approved; deny rule -> denied; else pending.
+      security: [{RunCallbackAuth: []}]
+      parameters: [{$ref: '#/components/parameters/RunId'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/AgentApprovalIn'}}}
+      responses:
+        '201': {description: Recorded, content: {application/json: {schema: {$ref: '#/components/schemas/AgentApprovalOut'}}}}
+        '401': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+  /runs/{run_id}/approval-requests/{approval_id}:
+    get:
+      tags: [Runs]
+      security: [{RunCallbackAuth: []}]
+      parameters: [{$ref: '#/components/parameters/RunId'}, {name: approval_id, in: path, required: true, schema: {type: string, format: uuid}}]
+      responses:
+        '200': {description: State, content: {application/json: {schema: {$ref: '#/components/schemas/AgentApprovalOut'}}}}
+  /pause:
+    post:
+      tags: [Runs]
+      summary: 'Global kill switch, device-signed {action: pause|resume, device_id, ts}'
+      security: [{DeviceAuth: []}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/PauseIn'}}}
+      responses:
+        '200': {description: Applied, content: {application/json: {schema: {type: object, properties: {paused: {type: boolean}, cancelled_runs: {type: integer}}}}}}
+  /policy:
+    get:
+      tags: [Approvals]
+      summary: Active policy rules (read-only on the watch)
+      security: [{DeviceAuth: []}]
+      responses:
+        '200': {description: Rules, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/PolicyRuleOut'}}}}}
+components:
+  securitySchemes:
+    BearerAuth: {type: http, scheme: bearer, bearerFormat: JWT}
+    DeviceAuth: {type: http, scheme: bearer, description: Revocable device credential}
+    RunCallbackAuth: {type: http, scheme: bearer, description: 'Per-run token delivered in the signed dispatch webhook; valid 24 h after dispatch'}
+  parameters:
+    RecordingId: {name: recording_id, in: path, required: true, schema: {type: string, format: uuid}}
+    ProjectId: {name: project_id, in: path, required: true, schema: {type: string, format: uuid}}
+    TaskId: {name: task_id, in: path, required: true, schema: {type: string, format: uuid}}
+    RunId: {name: run_id, in: path, required: true, schema: {type: string, format: uuid}}
+    IdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 8, maxLength: 128}}
+    Cursor: {name: cursor, in: query, schema: {type: string}}
+    Limit: {name: limit, in: query, schema: {type: integer, default: 30, minimum: 1, maximum: 100}}
+  responses:
+    Problem: {description: Request error, content: {application/json: {schema: {$ref: '#/components/schemas/Problem'}}}}
+  schemas:
+    Problem: {type: object, required: [code, message, trace_id], properties: {code: {type: string}, message: {type: string}, trace_id: {type: string, format: uuid}, details: {type: object}}}
+    Device: {type: object, required: [id, name, max_duration_ms], properties: {id: {type: string, format: uuid}, name: {type: string}, max_duration_ms: {type: integer, example: 90000}}}
+    RecordingReceipt: {type: object, required: [id, status, trace_id], properties: {id: {type: string, format: uuid}, status: {type: string, enum: [stored]}, trace_id: {type: string, format: uuid}}}
+    Recording: {type: object, required: [id, state, created_at], properties: {id: {type: string, format: uuid}, state: {type: string}, transcript: {type: [string, 'null']}, created_at: {type: string, format: date-time}, trace_id: {type: string, format: uuid}}}
+    NewProject: {type: object, required: [slug, name], properties: {slug: {type: string, pattern: '^[a-z0-9][a-z0-9-]{1,62}$'}, name: {type: string, minLength: 1}, description: {type: string}, repo_url: {type: [string, 'null'], format: uri}}}
+    Project: {allOf: [{$ref: '#/components/schemas/NewProject'}, {type: object, required: [id], properties: {id: {type: string, format: uuid}}}]}
+    NewTask: {type: object, required: [project_id, title, intent, agent_type], properties: {project_id: {type: string, format: uuid}, title: {type: string}, description: {type: string}, intent: {type: string}, agent_type: {type: string}, budget_usd: {type: number, minimum: 0}}}
+    Task: {allOf: [{$ref: '#/components/schemas/NewTask'}, {type: object, required: [id, state], properties: {id: {type: string, format: uuid}, state: {type: string}, recording_id: {type: [string, 'null'], format: uuid}}}]}
+    Run: {type: object, required: [id, task_id, state, attempt], properties: {id: {type: string, format: uuid}, task_id: {type: string, format: uuid}, state: {type: string}, attempt: {type: integer}, external_pr_url: {type: [string, 'null'], format: uri}}}
+    RunEvent: {type: object, required: [event_type, created_at], properties: {event_type: {type: string}, created_at: {type: string, format: date-time}, payload: {type: object}}}
+    Approval:
+      type: object
+      required: [id, kind, run_id, capability, action_summary, agent_provided, state, risk, expires_at, action_fingerprint]
+      properties:
+        id: {type: string, format: uuid}
+        kind: {type: string, enum: [action, policy_change, agent_request]}
+        run_id: {type: [string, 'null'], format: uuid}
+        capability: {type: string}
+        action_summary: {type: string}
+        agent_provided: {type: boolean, description: 'true = summary written by the agent (untrusted)'}
+        state: {type: string}
+        risk: {type: string, enum: [low, medium, high]}
+        expires_at: {type: string, format: date-time}
+        action_fingerprint: {type: string, minLength: 64, maxLength: 64}
+        project_id: {type: [string, 'null'], format: uuid}
+        runner: {type: [string, 'null']}
+        runner_trust: {type: [string, 'null'], enum: [isolated, cooperative, null]}
+    SignedBody:
+      type: object
+      additionalProperties: false
+      required: [ts, signature]
+      properties:
+        ts: {type: string, maxLength: 40, description: ISO-8601 with offset}
+        signature: {type: string, maxLength: 200, description: base64 DER ECDSA P-256 SHA-256}
+    ApprovalDecision:
+      type: object
+      additionalProperties: false
+      required: [ts, signature, decision, action_fingerprint]
+      properties:
+        ts: {type: string, maxLength: 40}
+        signature: {type: string, maxLength: 200}
+        decision: {type: string, enum: [approved, denied]}
+        action_fingerprint: {type: string, minLength: 64, maxLength: 64}
+    PauseIn:
+      type: object
+      additionalProperties: false
+      required: [ts, signature, paused]
+      properties:
+        ts: {type: string, maxLength: 40}
+        signature: {type: string, maxLength: 200}
+        paused: {type: boolean}
+    PairIn:
+      type: object
+      additionalProperties: false
+      required: [code, public_key, name]
+      properties:
+        code: {type: string, minLength: 8, maxLength: 8}
+        public_key: {type: string, maxLength: 200, description: base64 X9.63 P-256 public key}
+        name: {type: string, minLength: 1, maxLength: 64}
+    PairOut: {type: object, required: [device_id, token], properties: {device_id: {type: string, format: uuid}, token: {type: string}}}
+    PushTokenIn:
+      type: object
+      additionalProperties: false
+      required: [token, environment]
+      properties:
+        token: {type: string, pattern: '^[0-9a-fA-F]{32,200}$'}
+        environment: {type: string, enum: [production, development]}
+    AgentApprovalIn:
+      type: object
+      additionalProperties: false
+      required: [capability, action_summary]
+      properties:
+        capability: {type: string, maxLength: 64}
+        action_summary: {type: string, maxLength: 500}
+        details: {type: object}
+    AgentApprovalOut:
+      type: object
+      required: [approval_id, state, expires_at]
+      properties:
+        approval_id: {type: [string, 'null'], format: uuid}
+        state: {type: string, enum: [pending, approved, denied, expired]}
+        expires_at: {type: [string, 'null'], format: date-time}
+    PolicyRuleOut:
+      type: object
+      required: [id, runner, project, mode, effects, source, expires_at]
+      properties:
+        id: {type: string, format: uuid}
+        runner: {type: [string, 'null']}
+        project: {type: [string, 'null']}
+        mode: {type: string, enum: [bypass, granular]}
+        effects: {type: object, additionalProperties: {type: string, enum: [allow, ask, deny]}}
+        source: {type: string}
+        expires_at: {type: [string, 'null'], format: date-time}
+    NewInstruction:
+      type: object
+      additionalProperties: false
+      required: [client_instruction_id, source, text, transcription, client]
+      properties:
+        client_instruction_id: {type: string, format: uuid}
+        source: {type: string, enum: [apple_watch, web, esp32_text]}
+        text: {type: string, minLength: 1, maxLength: 4000}
+        language: {type: [string, 'null'], pattern: '^[a-z]{2}(-[A-Z]{2})?$'}
+        project_hint: {type: [string, 'null'], format: uuid}
+        reply_to_run_id: {type: [string, 'null'], format: uuid, description: 'v0.6: answer inside that run''s T3 conversation (new run attempt, same thread) instead of opening a new session'}
+        runner_hint: {type: [string, 'null'], minLength: 1, maxLength: 64, description: 'Name or alias of the T3 Code machine (e.g. mac, vps). Otherwise taken from the text ("en el mac"), the project default, or the user default.'}
+        transcription:
+          type: object
+          additionalProperties: false
+          required: [engine, on_device]
+          properties:
+            engine: {type: string, enum: [whistle, system_dictation, remote, manual, mock]}
+            model_version: {type: [string, 'null'], maxLength: 128}
+            on_device: {type: boolean}
+            duration_ms: {type: [integer, 'null'], minimum: 0, maximum: 600000}
+        client:
+          type: object
+          additionalProperties: false
+          required: [app_version, platform]
+          properties:
+            app_version: {type: string, maxLength: 32}
+            platform: {type: string, enum: [watchos, web, ios, esp32]}
+    InstructionReceipt:
+      type: object
+      required: [instruction_id, status, created_at, links]
+      properties:
+        instruction_id: {type: string, format: uuid}
+        status: {$ref: '#/components/schemas/InstructionStatus'}
+        created_at: {type: string, format: date-time}
+        links: {type: object, required: [self], properties: {self: {type: string}}}
+    InstructionStatus:
+      type: string
+      description: 'captured = stored as an idea, nothing executed. awaiting_approval = a policy gate or a policy-change confirmation is pending. applied = a voice policy change took effect.'
+      enum: [queued, routing, needs_clarification, captured, dispatched, awaiting_approval, applied, failed, cancelled]
+    Instruction:
+      type: object
+      required: [id, client_instruction_id, status, created_at, updated_at]
+      properties:
+        id: {type: string, format: uuid}
+        client_instruction_id: {type: string, format: uuid}
+        status: {$ref: '#/components/schemas/InstructionStatus'}
+        intent: {type: [string, 'null'], enum: [new_project, existing_project, continue_task, capture_idea, research, implement_feature, status_query, approval_decision, policy_change, open_issue, analyze_bug, null]}
+        project_id: {type: [string, 'null'], format: uuid}
+        task_id: {type: [string, 'null'], format: uuid}
+        agent_run_id: {type: [string, 'null'], format: uuid}
+        approval_id: {type: [string, 'null'], format: uuid}
+        candidates: {type: array, items: {type: object, required: [project_id, name], properties: {project_id: {type: string, format: uuid}, name: {type: string}}}}
+        error_code: {type: [string, 'null'], description: 'e.g. ambiguous_route, unknown_runner, ambiguous_runner, policy_denied, policy_ambiguous, policy_scope_missing, policy_scope_ambiguous, policy_duration_missing, conversation_not_found, agent_unavailable'}
+        progress: {oneOf: [{$ref: '#/components/schemas/RunProgress'}, {type: 'null'}]}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    RunProgress:
+      type: object
+      required: [runner, run_state, summary, pr_url, updated_at]
+      properties:
+        runner: {type: [string, 'null']}
+        agent: {type: [string, 'null'], description: 'v0.5: coding agent key chosen by the router (e.g. claude, codex)'}
+        run_state: {type: string, enum: [queued, provisioning, running, waiting_approval, succeeded, failed, cancelled, timed_out]}
+        summary: {type: [string, 'null'], description: 'Agent-written, untrusted display text'}
+        pr_url: {type: [string, 'null'], format: uri}
+        updated_at: {type: [string, 'null'], format: date-time}
+    RunEventIn:
+      type: object
+      additionalProperties: false
+      required: [event]
+      properties:
+        event: {type: string, enum: [started, progress, needs_input, succeeded, failed]}
+        summary: {type: [string, 'null'], maxLength: 500}
+        pr_url: {type: [string, 'null'], maxLength: 500, pattern: '^https://'}
+        external_ref: {type: [string, 'null'], maxLength: 200, description: 'T3 Code thread id'}
