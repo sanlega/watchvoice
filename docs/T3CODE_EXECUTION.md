@@ -33,7 +33,14 @@ Watch ─texto─► VOX backend ─router + política─► task + run ─outbo
 2. En el backend: `INSERT INTO runners (user_id, name, aliases, webhook_url, secret_env, is_default) VALUES (…, 'mac', '["macbook"]', '<webhookUrl>', 'VOX_RUNNER_SECRET_MAC', false)` y exportar `VOX_RUNNER_SECRET_MAC` con el mismo secreto.
 3. Backend: `VOX_PUBLIC_BASE_URL` (HTTPS alcanzable desde las máquinas), `VOX_CALLBACK_SECRET`, `python -m app.worker`.
 
+## Verificado en el PC (2026-10-20)
+- Proyecto T3 **"VOX Dispatcher"** (`~/.t3/projects/vox-dispatcher`) con un webhook *scheduled task*, firmado con HMAC (`x-vox-signature`, hex, `sha256=`), `maxDeliveryAgeMinutes: 1440` y un hilo nuevo por cada entrega. La URL y el secreto están en `~/.vox/secrets.env`, fuera del repo.
+- Relay: una firma falsa devuelve **401 `invalid_signature`** y una válida **202**.
+- Los placeholders anidados (`{{body.callback.url}}`, `{{body.project.name}}`) **se resuelven**.
+- El dispatcher ejecutó deduplicación → búsqueda del proyecto → `failed` (proyecto inexistente, a propósito). El callback falló solo porque `vox.santi.tools` aún no existe.
+- **Detalle de T3:** los hilos del webhook se crean en un *worktree desde origin*. El repo del dispatcher necesita un remoto `origin` y la rama `main`; con `master` y sin remoto, la preparación del workspace falla. Solución aplicada: un origin bare local en `~/.vox/vox-dispatcher-origin.git` y la rama renombrada a `main`.
+- Permisos (ADR-0001): el dispatcher corre en `full-access`, que es el techo, y lanza cada trabajador con el `runtimeMode` que decide VOX (`full-access` en bypass, `auto` en granular; sin verificar). La cancelación llega como `run.cancel.v1` y se ejecuta con `t3_thread_interrupt`.
+
 ## No verificado todavía
-- Que la ruta anidada `{{body.callback.url}}` se resuelva (la doc da como ejemplo `{{body.release.tag_name}}`, así que es probable).
 - La entrega real por el relay de T3 Connect y el formato exacto de la firma que espera T3 (hex + `sha256=` es lo que documenta).
 - `curl` con comillas simples en Windows/PowerShell: el agente del PC puede tener que adaptar el comando.

@@ -5,9 +5,8 @@ import sys
 import uuid
 
 from . import db
+from .control import WATCH_SCOPES
 from .processor import sha256
-
-WATCH_SCOPES = ["instructions:write", "instructions:read", "approvals:read", "approvals:decide"]
 
 
 def seed(engine, email="owner@example.invalid"):

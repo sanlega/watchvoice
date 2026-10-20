@@ -1,19 +1,62 @@
+import base64
+import os
 import uuid
+from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from app import db
 from app.devtools import seed
 from app.main import create_app
+from app.devicesig import canonical
 from app.processor import sha256
+
+
+def new_device_key():
+    key = ec.generate_private_key(ec.SECP256R1())
+    raw = key.public_key().public_bytes(serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
+    return key, base64.b64encode(raw).decode()
+
+
+def sign(key, message: dict) -> str:
+    return base64.b64encode(key.sign(canonical(message), ec.ECDSA(hashes.SHA256()))).decode()
+
+
+REPO = Path(__file__).resolve().parents[2]
+MIGRATIONS = [REPO / "docs/vox-agent-spec/schema.sql",
+              *sorted(p for p in (REPO / "backend/migrations").glob("*.sql") if not p.name.endswith(".down.sql"))]
+
+
+def database_url(tmp_path) -> str:
+    """SQLite by default. With VOX_TEST_PG=postgresql://user:pw@host:port, each test gets a fresh PostgreSQL
+    database built from the real migrations (001 + 00N), so code and DDL are checked against each other."""
+    pg = os.environ.get("VOX_TEST_PG")
+    if not pg:
+        return f"sqlite:///{tmp_path / 'vox.db'}"
+    import psycopg
+    name = "t_" + uuid.uuid4().hex[:12]
+    with psycopg.connect(f"{pg}/postgres", autocommit=True) as admin:
+        admin.execute(f"CREATE DATABASE {name}")
+    with psycopg.connect(f"{pg}/{name}", autocommit=True) as conn:
+        for f in MIGRATIONS:
+            conn.execute(f.read_text("utf-8"))
+    return f"{pg.replace('postgresql://', 'postgresql+psycopg://')}/{name}"
 
 
 class Env:
     def __init__(self, tmp_path, **app_kw):
-        self.app = create_app(f"sqlite:///{tmp_path / 'vox.db'}", **app_kw)
+        self.app = create_app(database_url(tmp_path), **app_kw)
         self.engine = self.app.state.engine
+        self.url = self.engine.url.render_as_string(hide_password=False)
         self.user_id, self.token = seed(self.engine)
+        self.key, public_key = new_device_key()
+        with self.engine.begin() as c:
+            c.execute(db.devices.update().where(db.devices.c.user_id == self.user_id).values(public_key=public_key))
+            self.device_id = c.execute(select(db.devices.c.id).where(db.devices.c.user_id == self.user_id)).scalar_one()
         self.client = TestClient(self.app)
         self.musiquillas, self.hardware = uuid.uuid4(), uuid.uuid4()
         with self.engine.begin() as c:
@@ -27,6 +70,27 @@ class Env:
 
     def headers(self, key=None, token=None):
         return {"Authorization": f"Bearer {token or self.token}", "Idempotency-Key": str(key or uuid.uuid4())}
+
+    def ts(self, delta_s=0):
+        from datetime import timedelta
+        return (db.now() + timedelta(seconds=delta_s)).isoformat()
+
+    def decide(self, ap, decision="approved", key=None, ts=None, fingerprint=None, token=None, device_id=None):
+        fp = fingerprint or ap["action_fingerprint"]
+        ts = ts or self.ts()
+        msg = {"approval_id": ap["id"], "action_fingerprint": fp, "decision": decision,
+               "device_id": str(device_id or self.device_id), "ts": ts}
+        body = {"decision": decision, "action_fingerprint": fp, "ts": ts, "signature": sign(key or self.key, msg)}
+        return self.client.post(f"/v1/approvals/{ap['id']}/decision", json=body, headers=self.headers(token=token))
+
+    def signed(self, path, action, extra=None, key=None, **msg_extra):
+        ts = self.ts()
+        msg = {"action": action, "device_id": str(self.device_id), "ts": ts, **msg_extra}
+        return self.client.post(path, json={"ts": ts, "signature": sign(key or self.key, msg), **(extra or {})},
+                                headers=self.headers())
+
+    def pending(self):
+        return self.client.get("/v1/approvals?status=pending", headers=self.headers()).json()
 
     def add_device(self, scopes, revoked=False):
         token = "vox_" + uuid.uuid4().hex
@@ -57,3 +121,20 @@ class Env:
 @pytest.fixture
 def env(tmp_path):
     return Env(tmp_path)
+
+
+SECRET = "test-webhook-secret"
+
+
+@pytest.fixture
+def renv(env, monkeypatch):
+    monkeypatch.setenv("VOX_CALLBACK_SECRET", "test-callback-secret")
+    monkeypatch.setenv("VOX_RUNNER_SECRET_MAC", SECRET)
+    monkeypatch.setenv("VOX_RUNNER_SECRET_VPS", SECRET)
+    with env.engine.begin() as c:
+        c.execute(db.runners.insert(), [
+            dict(user_id=env.user_id, name="vps", aliases=["servidor"], webhook_url="https://relay.example/vps",
+                 secret_env="VOX_RUNNER_SECRET_VPS", is_default=True),
+            dict(user_id=env.user_id, name="mac", aliases=["macbook"], webhook_url="https://relay.example/mac",
+                 secret_env="VOX_RUNNER_SECRET_MAC", is_default=False)])
+    return env

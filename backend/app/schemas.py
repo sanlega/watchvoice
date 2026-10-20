@@ -35,7 +35,7 @@ class NewInstruction(BaseModel):
 
 
 InstructionStatus = Literal["queued", "routing", "needs_clarification", "captured", "dispatched",
-                            "awaiting_approval", "failed", "cancelled"]
+                            "awaiting_approval", "applied", "failed", "cancelled"]
 
 
 class InstructionReceipt(BaseModel):
@@ -85,20 +85,74 @@ class RunEventIn(BaseModel):
 
 class Approval(BaseModel):
     id: UUID
-    run_id: UUID
+    kind: Literal["action", "policy_change", "agent_request"]
+    run_id: UUID | None
     capability: str
     action_summary: str
+    agent_provided: bool  # summary written by the agent: untrusted display text
     state: str
+    risk: Literal["low", "medium", "high"]
     expires_at: datetime
+    action_fingerprint: str  # sign this (ADR-0001 §5); not secret
     project_id: UUID | None = None
-    risk: Literal["low", "medium", "high"] = "high"
-    challenge_token: str | None = None
+    runner: str | None = None
+    runner_trust: Literal["isolated", "cooperative"] | None = None
 
 
-class ApprovalDecision(BaseModel):
+class SignedBody(BaseModel):
     model_config = Strict
+    ts: str = Field(max_length=40)
+    signature: str = Field(max_length=200)  # base64 DER ECDSA P-256 / SHA-256
+
+
+class ApprovalDecision(SignedBody):
     decision: Literal["approved", "denied"]
-    challenge_token: str | None = None
+    action_fingerprint: str = Field(min_length=64, max_length=64)
+
+
+class PauseIn(SignedBody):
+    paused: bool
+
+
+class PairIn(BaseModel):
+    model_config = Strict
+    code: str = Field(min_length=8, max_length=8)
+    public_key: str = Field(max_length=200)  # base64 X9.63 P-256 public key
+    name: str = Field(min_length=1, max_length=64)
+
+
+class PairOut(BaseModel):
+    device_id: UUID
+    token: str
+
+
+class PushTokenIn(BaseModel):
+    model_config = Strict
+    token: str = Field(pattern=r"^[0-9a-fA-F]{32,200}$")
+    environment: Literal["production", "development"]
+
+
+class AgentApprovalIn(BaseModel):
+    model_config = Strict
+    capability: str = Field(min_length=1, max_length=64)
+    action_summary: str = Field(min_length=1, max_length=500)
+    details: dict = Field(default_factory=dict)
+
+
+class AgentApprovalOut(BaseModel):
+    approval_id: UUID | None
+    state: Literal["pending", "approved", "denied", "expired"]
+    expires_at: datetime | None
+
+
+class PolicyRuleOut(BaseModel):
+    id: UUID
+    runner: str | None
+    project: str | None
+    mode: Literal["bypass", "granular"]
+    effects: dict[str, str]
+    source: str
+    expires_at: datetime | None
 
 
 Instruction.model_rebuild()

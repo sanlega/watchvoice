@@ -24,12 +24,26 @@ Hitos (BRIEF_PRD §14). H0: contrato + prueba Whistle real. H1: texto simulado W
 | W-060 Runners + selección de máquina (hint > texto > proyecto > default) | A5 | **Hecho** (tests) |
 | W-061 Despacho firmado HMAC vía outbox + reintentos | A5 | **Hecho** (tests con relay fake; relay real sin probar) |
 | W-062 `POST /v1/runs/{id}/events` + `progress` en GET instruction | A5/A6 | **Hecho** (tests) |
-| W-063 Timeout de runs sin callback + reintento manual | A5 | Pendiente |
-| W-064 Instalar dispatcher webhook en PC/VPS/Mac (`contracts/t3code/dispatcher-prompt.md`) | Usuario + A7 | **Pendiente de tu OK** (URL pública + secreto) |
+| W-063 Timeout de runs sin callback | A5 | **Hecho** (sweeper: stale 30 min, timed_out a las 2 h) |
+| W-064 Instalar dispatcher webhook en PC/VPS/Mac (`contracts/t3code/dispatcher-prompt.md`) | Usuario + A7 | **PC hecho y verificado** (smoke firmado); VPS y Mac pendientes |
 | W-065 E2E real: reloj → backend → T3 (PC) → callback → reloj | A7 | Bloqueado por W-064 y por un backend con HTTPS público |
 
+## Permisos y aprobaciones (ADR-0001, rama `feat/permissions`)
+| Ticket | Estado |
+|---|---|
+| W-070 Reglas bypass/granular por máquina × proyecto, suelo no anulable | **Hecho** (tests) |
+| W-071 Cambios de política por voz (endurecer al instante; relajar con un toque; aclaración en ambigüedad) | **Hecho** (tests) |
+| W-072 Aprobaciones firmadas P-256 (Secure Enclave), TTL 5 min (alto) o 15 min | **Hecho** en backend; reloj escrito por un subagente, sin compilar |
+| W-073 Push APNs (token auth, categorías, niveles) | **Hecho** en backend con APNs simulado; envío real **BLOCKED** (membresía y .p8) |
+| W-074 Peticiones de aprobación de agentes, cuotas, bypass inmediato | **Hecho** (tests) |
+| W-075 Parar run firmado + `run.cancel.v1` con caducidad + pausa global | **Hecho** (tests) |
+| W-076 Emparejado por código + CLI de administración | **Hecho** (tests) |
+| W-077 Despliegue: Dockerfile con pytest, compose, `migrate.sh` | **Hecho** y verificado en local con PostgreSQL 16; despliegue en el VPS pendiente (canal del bot) |
+| W-078 Spike de `runtimeMode` en un runner desechable | Pendiente |
+| W-079 Acciones brokered: `repo.merge_protected` vía la API de GitHub | Pendiente |
+
 ## Siguientes
-W-046 cifrado de `text` en reposo · W-047 `/resolve` con versión optimista · W-048 `/watch/bootstrap` · W-043 projects/tasks ligeros · W-033 background URLSession · W-030 emparejamiento sin iPhone · W-049 suite contra PostgreSQL (Docker) · W-045 auditoría append-only con trigger · W-052 threat model.
+W-046 cifrado de `text` en reposo · W-047 `/resolve` con versión optimista · W-048 `/watch/bootstrap` · W-043 projects/tasks ligeros · W-033 background URLSession · W-030 emparejamiento sin iPhone · W-045 auditoría append-only con trigger · W-052 threat model.
 
 ## Ramas
 Ahora: `feat/h1-vertical-slice` (gate 0 + corte H1). Cuando el contrato esté aprobado, el trabajo se reparte en `feat/watch-ui`, `feat/watch-asr`, `feat/watch-sync`, `feat/instructions-api`, `feat/security` y `test/watch-e2e`. Cada rama toca solo las rutas de su owner (ver ARCHITECTURE.md) y no se integra sin tests verdes.

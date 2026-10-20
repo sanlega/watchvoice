@@ -1,4 +1,8 @@
-# API delta v0.2.0 → v0.3.0 (solo aditivo)
+# API delta v0.2.0 → v0.4.0 (solo aditivo)
+
+**v0.4.0 (ADR-0001):** `POST /devices/pair`, `PUT /devices/me/push-token`, `POST /runs/{id}/approval-requests` (+ GET), `POST /runs/{id}/cancel` (ahora con cuerpo firmado), `POST /pause`, `GET /policy`. La decisión de aprobación pasa a ir firmada (`ts`, `signature`, `action_fingerprint`) y el `challenge_token` de v0.3, que nunca se publicó, desaparece. `Approval` añade `kind`, `agent_provided`, `action_fingerprint`, `runner` y `runner_trust`. `InstructionStatus` añade `applied`. Migración `004_permissions.sql`.
+
+## v0.3.0
 
 Contrato canónico: `contracts/openapi.yaml` (v0.3.0). Original intacto en `docs/vox-agent-spec/openapi.yaml`.
 Inventario real: **en este repo no había backend implementado**, solo la especificación v0.2. No existe ningún cliente desplegado que romper, pero todo se diseña como si el ESP32 estuviera en producción.
@@ -26,12 +30,12 @@ Campos opcionales nuevos en `Approval`: `project_id`, `risk`, `challenge_token`.
 Se aplica sobre `schema.sql` v0.2 (001). Reutiliza tablas equivalentes en lugar de duplicarlas:
 - Los relojes son filas de `devices` (`hardware_model='apple_watch'`). La tabla `watch_devices` del brief no se crea. Columna nueva `devices.scopes jsonb DEFAULT ["recordings:write"]`, así el ESP32 sigue siendo solo audio.
 - La idempotencia usa la `api_idempotency` existente.
-- Tablas nuevas: `instructions` (UNIQUE `user_id, client_instruction_id`), `instruction_events` (sin texto), `approval_challenges`.
+- Tablas nuevas: `instructions` (UNIQUE `user_id, client_instruction_id`) e `instruction_events` (sin texto). (`approval_challenges` existió en el borrador v0.3 y se eliminó en v0.4.)
 - `routing_decisions.recording_id` pasa a admitir NULL, con un CHECK XOR contra la nueva columna `instruction_id`; todas las filas existentes cumplen el CHECK.
 - `tasks.instruction_id` UNIQUE: es la garantía de que no se duplican tareas.
 - `device_delivery_attempts` del brief queda **diferida**: los intentos se registran en el reloj y el servidor ya deduplica.
 
 Down: `002_instructions.down.sql` (destructivo; solo sin datos reales).
 
-## Validación pendiente
-- Aplicar 001+002 sobre PostgreSQL 16 y ejecutar la suite contra PG: **BLOCKED** porque el daemon de Docker no estaba corriendo. La suite actual corre sobre SQLite. Hay dos dudas abiertas: el cast implícito de texto a los enums de PG (`task_state`, `instruction_status`) con psycopg3, y la concurrencia real de la carrera de idempotencia (rama `IntegrityError`).
+## Validación
+- 001→004 aplicadas sobre PostgreSQL 16 con `deploy/migrate.sh`, que es idempotente. La suite completa pasa sobre PG (`VOX_TEST_PG`), incluido un test de 8 envíos concurrentes idénticos (1 instrucción, 1 tarea). Al ejecutarla sobre PG apareció un bug real (bind de texto a columnas enum), ya corregido.

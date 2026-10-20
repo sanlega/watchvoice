@@ -1,6 +1,5 @@
 -- Rollback of 002. Destroys instruction data: only for environments without real data.
 BEGIN;
-DROP TABLE approval_challenges;
 ALTER TABLE tasks DROP COLUMN instruction_id;
 ALTER TABLE routing_decisions DROP CONSTRAINT routing_source_xor;
 ALTER TABLE routing_decisions DROP COLUMN instruction_id;

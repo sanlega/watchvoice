@@ -17,12 +17,10 @@ from pydantic import ValidationError
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 
-from . import db
-from .policy import HIGH_RISK
-from .processor import EVENT_RECEIVED, audit, aware, process_instruction, sha256
-from .runners import enqueue_dispatch, verify_callback_token
-from .schemas import (Approval, ApprovalDecision, Instruction, InstructionReceipt, NewInstruction, RunEventIn,
-                      RunProgress)
+from . import control, db
+from .deps import Problem, device, problem_response, require, require_idempotency_key
+from .processor import EVENT_RECEIVED, aware, process_instruction
+from .schemas import Instruction, InstructionReceipt, NewInstruction, RunProgress
 
 MAX_BODY_BYTES = 16 * 1024
 ENDPOINT = "POST /v1/instructions"
@@ -39,17 +37,8 @@ class JsonFormatter(logging.Formatter):
 log = logging.getLogger("vox.api")
 
 
-class Problem(Exception):
-    def __init__(self, status: int, code: str, message: str, headers: dict | None = None):
-        self.status, self.code, self.message, self.headers = status, code, message, headers
-
-
-def problem_response(status, code, message, headers=None):
-    return JSONResponse({"code": code, "message": message, "trace_id": str(uuid.uuid4())}, status, headers)
-
-
 def create_app(database_url: str | None = None, rate_limit_per_minute: int = 20, process_inline: bool = True):
-    app = FastAPI(title="VOX Agent API", version="0.3.0")
+    app = FastAPI(title="VOX Agent API", version="0.4.0")
     vox_log = logging.getLogger("vox")
     if not vox_log.handlers:
         handler = logging.StreamHandler()
@@ -69,23 +58,11 @@ def create_app(database_url: str | None = None, rate_limit_per_minute: int = 20,
     async def _invalid(_, exc):
         return problem_response(422, "validation_error", "Request failed validation")
 
-    def device(authorization: str | None = Header(default=None)):
-        if not authorization or not authorization.startswith("Bearer "):
-            raise Problem(401, "unauthorized", "Missing bearer token", {"WWW-Authenticate": "Bearer"})
-        with app.state.engine.connect() as conn:
-            row = conn.execute(select(db.devices).where(
-                db.devices.c.credential_hash == sha256(authorization[7:].strip()))).first()
-        if row is None or row.revoked_at is not None:
-            raise Problem(401, "unauthorized", "Invalid or revoked credential", {"WWW-Authenticate": "Bearer"})
-        return row
-
-    def require(dev, scope):
-        if scope not in (dev.scopes or []):
-            raise Problem(403, "forbidden", f"Device lacks scope {scope}")
-
     def receipt(ins) -> dict:
         return InstructionReceipt(instruction_id=ins.id, status="queued", created_at=aware(ins.created_at),
                                   links={"self": f"/v1/instructions/{ins.id}"}).model_dump(mode="json")
+
+    app.include_router(control.router)
 
     @app.get("/healthz")
     def healthz():
@@ -95,8 +72,7 @@ def create_app(database_url: str | None = None, rate_limit_per_minute: int = 20,
     async def submit_instruction(request: Request, background: BackgroundTasks, dev=Depends(device),
                                  idempotency_key: str | None = Header(default=None)):
         require(dev, "instructions:write")
-        if not idempotency_key or not 8 <= len(idempotency_key) <= 128:
-            raise Problem(400, "idempotency_key_required", "Idempotency-Key header (8-128 chars) is required")
+        require_idempotency_key(idempotency_key)
         raw = await request.body()
         if len(raw) > MAX_BODY_BYTES:
             raise Problem(413, "payload_too_large", f"Body exceeds {MAX_BODY_BYTES} bytes")
@@ -180,111 +156,6 @@ def create_app(database_url: str | None = None, rate_limit_per_minute: int = 20,
         return Instruction(**{k: getattr(ins, k) for k in Instruction.model_fields
                               if k not in {"created_at", "updated_at", "progress"}},
                            progress=progress, created_at=aware(ins.created_at), updated_at=aware(ins.updated_at))
-
-    def expire_stale(conn, user_id):
-        conn.execute(update(db.approvals).where(db.approvals.c.user_id == user_id, db.approvals.c.state == "pending",
-                                                db.approvals.c.expires_at < db.now()).values(state="expired"))
-
-    @app.get("/v1/approvals", response_model=list[Approval])
-    def list_approvals(status: str | None = None, dev=Depends(device)):
-        require(dev, "approvals:read")
-        with app.state.engine.begin() as conn:
-            expire_stale(conn, dev.user_id)
-            q = (select(db.approvals, db.tasks.c.project_id, db.approval_challenges.c.token)
-                 .join(db.agent_runs, db.agent_runs.c.id == db.approvals.c.run_id)
-                 .join(db.tasks, db.tasks.c.id == db.agent_runs.c.task_id)
-                 .outerjoin(db.approval_challenges, (db.approval_challenges.c.approval_id == db.approvals.c.id)
-                            & db.approval_challenges.c.consumed_at.is_(None))
-                 .where(db.approvals.c.user_id == dev.user_id).order_by(db.approvals.c.created_at.desc()).limit(50))
-            if status:
-                q = q.where(db.approvals.c.state == status)
-            rows = conn.execute(q).all()
-        return [Approval(id=r.id, run_id=r.run_id, capability=r.capability, action_summary=r.action_summary,
-                         state=r.state, expires_at=aware(r.expires_at), project_id=r.project_id,
-                         risk="high" if r.capability in HIGH_RISK else "medium",
-                         challenge_token=r.token if r.state == "pending" else None) for r in rows]
-
-    @app.post("/v1/approvals/{approval_id}/decision", response_model=Approval)
-    def decide(approval_id: uuid.UUID, body: ApprovalDecision, dev=Depends(device),
-               idempotency_key: str | None = Header(default=None)):
-        require(dev, "approvals:decide")
-        if not idempotency_key or not 8 <= len(idempotency_key) <= 128:
-            raise Problem(400, "idempotency_key_required", "Idempotency-Key header (8-128 chars) is required")
-        now = db.now()
-        with app.state.engine.begin() as conn:
-            ap = conn.execute(select(db.approvals).where(db.approvals.c.id == approval_id,
-                                                         db.approvals.c.user_id == dev.user_id)).first()
-            if ap is None:
-                raise Problem(404, "not_found", "Approval not found")
-            if ap.state == body.decision:
-                pass  # idempotent replay of the same decision
-            elif ap.state != "pending":
-                raise Problem(409, "approval_not_pending", f"Approval is {ap.state}")
-            elif aware(ap.expires_at) <= now:
-                conn.execute(update(db.approvals).where(db.approvals.c.id == ap.id).values(state="expired"))
-                audit(conn, user_id=dev.user_id, run_id=ap.run_id, event_type="approval.expired",
-                      subject_type="approval", subject_id=ap.id)
-                return JSONResponse({"code": "approval_expired", "message": "Approval expired",
-                                     "trace_id": str(uuid.uuid4())}, 409)  # commit the expiry, then reject
-            else:
-                ch = conn.execute(select(db.approval_challenges).where(
-                    db.approval_challenges.c.approval_id == ap.id, db.approval_challenges.c.consumed_at.is_(None))).first()
-                if (ch is None or not body.challenge_token or sha256(body.challenge_token) != ch.nonce_hash
-                        or ch.action_fingerprint != ap.action_digest or aware(ch.expires_at) <= now):
-                    raise Problem(403, "challenge_invalid", "Challenge token missing, invalid or not bound to this action")
-                conn.execute(update(db.approval_challenges).where(db.approval_challenges.c.id == ch.id)
-                             .values(consumed_at=now))
-                conn.execute(update(db.approvals).where(db.approvals.c.id == ap.id).values(
-                    state=body.decision, decided_by=dev.user_id, decided_at=now))
-                approved = body.decision == "approved"
-                run = conn.execute(select(db.agent_runs).where(db.agent_runs.c.id == ap.run_id)).first()
-                conn.execute(update(db.agent_runs).where(db.agent_runs.c.id == run.id)
-                             .values(state="queued" if approved else "cancelled"))
-                if approved and run.runner_id:
-                    trace = conn.execute(select(db.tasks.c.trace_id).where(db.tasks.c.id == run.task_id)).scalar_one()
-                    enqueue_dispatch(conn, run.id, trace)
-                conn.execute(update(db.tasks).where(db.tasks.c.id == run.task_id)
-                             .values(state="queued" if approved else "cancelled", updated_at=now))
-                conn.execute(update(db.instructions).where(db.instructions.c.approval_id == ap.id)
-                             .values(status="dispatched" if approved else "cancelled", updated_at=now))
-                audit(conn, user_id=dev.user_id, run_id=ap.run_id, event_type=f"approval.{body.decision}",
-                      subject_type="approval", subject_id=ap.id, actor_type="device", actor_id=str(dev.id))
-            ap = conn.execute(select(db.approvals).where(db.approvals.c.id == approval_id)).first()
-        return Approval(id=ap.id, run_id=ap.run_id, capability=ap.capability, action_summary=ap.action_summary,
-                        state=ap.state, expires_at=aware(ap.expires_at),
-                        risk="high" if ap.capability in HIGH_RISK else "medium")
-
-    TERMINAL = {"succeeded", "failed", "cancelled", "timed_out"}
-    RUN_TO_TASK = {"running": "running", "succeeded": "completed", "failed": "failed"}
-
-    @app.post("/v1/runs/{run_id}/events", status_code=204)
-    def run_event(run_id: uuid.UUID, body: RunEventIn, authorization: str | None = Header(default=None)):
-        token = authorization[7:].strip() if authorization and authorization.startswith("Bearer ") else ""
-        if not verify_callback_token(run_id, token):
-            raise Problem(401, "unauthorized", "Invalid run callback token", {"WWW-Authenticate": "Bearer"})
-        now = db.now()
-        with app.state.engine.begin() as conn:
-            run = conn.execute(select(db.agent_runs).where(db.agent_runs.c.id == run_id)).first()
-            if run is None:
-                raise Problem(404, "not_found", "Run not found")
-            if run.callback_expires_at is None or aware(run.callback_expires_at) <= now:
-                raise Problem(401, "callback_expired", "Run callback window closed or run not dispatched")
-            if run.state in TERMINAL:
-                raise Problem(409, "run_terminal", f"Run is {run.state}")
-            if run.state not in {"provisioning", "running"}:
-                raise Problem(409, "run_not_dispatched", f"Run is {run.state}")
-            state = {"succeeded": "succeeded", "failed": "failed"}.get(body.event, "running")
-            values = {"state": state, "last_event_at": now}
-            values |= {k: v for k, v in {"summary": body.summary, "external_pr_url": body.pr_url,
-                                         "external_ref": body.external_ref}.items() if v is not None}
-            conn.execute(update(db.agent_runs).where(db.agent_runs.c.id == run_id).values(**values))
-            conn.execute(update(db.tasks).where(db.tasks.c.id == run.task_id)
-                         .values(state=RUN_TO_TASK[state], updated_at=now))
-            audit(conn, user_id=run.user_id, run_id=run_id, event_type=f"run.{body.event}", subject_type="run",
-                  subject_id=run_id, actor_type="runner", actor_id=run.executor,
-                  payload={"pr_url": body.pr_url, "external_ref": body.external_ref})  # summary not audited: agent text
-        log.info("run_event", extra={"status": state, "code": body.event})
-        return None
 
     return app
 

@@ -3,27 +3,12 @@ import hmac
 import json
 import uuid
 
-import pytest
 from sqlalchemy import select
 
 from app import db
 from app.runners import DISPATCH_EVENT, deliver_dispatches
 
-SECRET = "test-webhook-secret"
-
-
-@pytest.fixture
-def renv(env, monkeypatch):
-    monkeypatch.setenv("VOX_CALLBACK_SECRET", "test-callback-secret")
-    monkeypatch.setenv("VOX_RUNNER_SECRET_MAC", SECRET)
-    monkeypatch.setenv("VOX_RUNNER_SECRET_VPS", SECRET)
-    with env.engine.begin() as c:
-        c.execute(db.runners.insert(), [
-            dict(user_id=env.user_id, name="vps", aliases=["servidor"], webhook_url="https://relay.example/vps",
-                 secret_env="VOX_RUNNER_SECRET_VPS", is_default=True),
-            dict(user_id=env.user_id, name="mac", aliases=["macbook"], webhook_url="https://relay.example/mac",
-                 secret_env="VOX_RUNNER_SECRET_MAC", is_default=False)])
-    return env
+from conftest import SECRET
 
 
 class FakeRelay:
@@ -80,9 +65,7 @@ def test_gated_run_is_dispatched_only_after_approval(renv):
     renv.submit("En Musiquillas despliega a producción en el mac")
     relay = FakeRelay()
     assert deliver_dispatches(renv.engine, relay) == 0
-    ap = renv.client.get("/v1/approvals?status=pending", headers=renv.headers()).json()[0]
-    renv.client.post(f"/v1/approvals/{ap['id']}/decision",
-                     json={"decision": "approved", "challenge_token": ap["challenge_token"]}, headers=renv.headers())
+    assert renv.decide(renv.pending()[0]).status_code == 200
     assert deliver_dispatches(renv.engine, relay) == 1 and relay.calls[0][0] == "https://relay.example/mac"
 
 

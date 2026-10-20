@@ -1,12 +1,14 @@
 openapi: 3.1.0
 info:
   title: VOX Agent API
-  version: 0.3.0
+  version: 0.4.0
   description: >-
     Self-hosted voice-to-project-agent API. Mutations are idempotent.
     v0.3.0 is purely additive over v0.2.0: transcript-first `/instructions` for the
     Apple Watch (and other text clients), optional fields on Approval, optional
     `challenge_token` on approval decisions. All v0.2.0 operations are unchanged.
+    v0.4.0 (ADR-0001): policy rules, device-signed approvals (replaces the unreleased
+    challenge_token), pairing, push registration, agent approval requests, signed cancel, pause.
 servers:
   - url: https://vox.example.invalid/v1
 security:
@@ -177,9 +179,15 @@ paths:
   /runs/{run_id}/cancel:
     post:
       tags: [Runs]
+      summary: 'v0.4: device-signed {action: cancel_run, run_id, device_id, ts}; best-effort stop on the runner'
       parameters: [{$ref: '#/components/parameters/RunId'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/SignedBody'}}}
       responses:
         '202': {description: Cancellation requested}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
   /runs/{run_id}/events:
     get:
       tags: [Runs]
@@ -195,15 +203,82 @@ paths:
   /approvals/{approval_id}/decision:
     post:
       tags: [Approvals]
+      summary: One-tap decision signed by the watch's Secure Enclave key (ADR-0001 §5)
+      description: >-
+        Signed message = canonical JSON (sorted keys, no spaces) of
+        {approval_id, action_fingerprint, decision, device_id, ts}; ECDSA P-256/SHA-256, DER, base64.
+        |now - ts| <= 2 min. Same decision again = 200 replay; a different decision afterwards = 409.
       parameters:
         - {name: approval_id, in: path, required: true, schema: {type: string, format: uuid}}
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
-        content: {application/json: {schema: {type: object, required: [decision], properties: {decision: {type: string, enum: [approved, denied]}, challenge_token: {type: string, description: 'v0.3: required for approvals that expose a challenge_token; binds the decision to the exact action shown'}}}}}
+        content: {application/json: {schema: {$ref: '#/components/schemas/ApprovalDecision'}}}
       responses:
         '200': {description: Approval updated, content: {application/json: {schema: {$ref: '#/components/schemas/Approval'}}}}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
         '409': {$ref: '#/components/responses/Problem'}
+  /devices/pair:
+    post:
+      tags: [Devices]
+      summary: Exchange a one-time pairing code (admin CLI) for a device token; registers the signing key
+      security: []
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/PairIn'}}}
+      responses:
+        '201': {description: Paired, content: {application/json: {schema: {$ref: '#/components/schemas/PairOut'}}}}
+        '401': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+  /devices/me/push-token:
+    put:
+      tags: [Devices]
+      security: [{DeviceAuth: []}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/PushTokenIn'}}}
+      responses:
+        '204': {description: Stored}
+  /runs/{run_id}/approval-requests:
+    post:
+      tags: [Runs]
+      summary: The running agent asks for a capability. Bypass scope -> approved; deny rule -> denied; else pending.
+      security: [{RunCallbackAuth: []}]
+      parameters: [{$ref: '#/components/parameters/RunId'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/AgentApprovalIn'}}}
+      responses:
+        '201': {description: Recorded, content: {application/json: {schema: {$ref: '#/components/schemas/AgentApprovalOut'}}}}
+        '401': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+  /runs/{run_id}/approval-requests/{approval_id}:
+    get:
+      tags: [Runs]
+      security: [{RunCallbackAuth: []}]
+      parameters: [{$ref: '#/components/parameters/RunId'}, {name: approval_id, in: path, required: true, schema: {type: string, format: uuid}}]
+      responses:
+        '200': {description: State, content: {application/json: {schema: {$ref: '#/components/schemas/AgentApprovalOut'}}}}
+  /pause:
+    post:
+      tags: [Runs]
+      summary: 'Global kill switch, device-signed {action: pause|resume, device_id, ts}'
+      security: [{DeviceAuth: []}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/PauseIn'}}}
+      responses:
+        '200': {description: Applied, content: {application/json: {schema: {type: object, properties: {paused: {type: boolean}, cancelled_runs: {type: integer}}}}}}
+  /policy:
+    get:
+      tags: [Approvals]
+      summary: Active policy rules (read-only on the watch)
+      security: [{DeviceAuth: []}]
+      responses:
+        '200': {description: Rules, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/PolicyRuleOut'}}}}}
 components:
   securitySchemes:
     BearerAuth: {type: http, scheme: bearer, bearerFormat: JWT}
@@ -230,7 +305,89 @@ components:
     Task: {allOf: [{$ref: '#/components/schemas/NewTask'}, {type: object, required: [id, state], properties: {id: {type: string, format: uuid}, state: {type: string}, recording_id: {type: [string, 'null'], format: uuid}}}]}
     Run: {type: object, required: [id, task_id, state, attempt], properties: {id: {type: string, format: uuid}, task_id: {type: string, format: uuid}, state: {type: string}, attempt: {type: integer}, external_pr_url: {type: [string, 'null'], format: uri}}}
     RunEvent: {type: object, required: [event_type, created_at], properties: {event_type: {type: string}, created_at: {type: string, format: date-time}, payload: {type: object}}}
-    Approval: {type: object, required: [id, run_id, capability, action_summary, state], properties: {id: {type: string, format: uuid}, run_id: {type: string, format: uuid}, capability: {type: string}, action_summary: {type: string}, state: {type: string}, expires_at: {type: string, format: date-time}, project_id: {type: [string, 'null'], format: uuid}, risk: {type: string, enum: [low, medium, high]}, challenge_token: {type: [string, 'null'], description: 'v0.3: opaque, only returned to the owner while pending'}}}
+    Approval:
+      type: object
+      required: [id, kind, run_id, capability, action_summary, agent_provided, state, risk, expires_at, action_fingerprint]
+      properties:
+        id: {type: string, format: uuid}
+        kind: {type: string, enum: [action, policy_change, agent_request]}
+        run_id: {type: [string, 'null'], format: uuid}
+        capability: {type: string}
+        action_summary: {type: string}
+        agent_provided: {type: boolean, description: 'true = summary written by the agent (untrusted)'}
+        state: {type: string}
+        risk: {type: string, enum: [low, medium, high]}
+        expires_at: {type: string, format: date-time}
+        action_fingerprint: {type: string, minLength: 64, maxLength: 64}
+        project_id: {type: [string, 'null'], format: uuid}
+        runner: {type: [string, 'null']}
+        runner_trust: {type: [string, 'null'], enum: [isolated, cooperative, null]}
+    SignedBody:
+      type: object
+      additionalProperties: false
+      required: [ts, signature]
+      properties:
+        ts: {type: string, maxLength: 40, description: ISO-8601 with offset}
+        signature: {type: string, maxLength: 200, description: base64 DER ECDSA P-256 SHA-256}
+    ApprovalDecision:
+      type: object
+      additionalProperties: false
+      required: [ts, signature, decision, action_fingerprint]
+      properties:
+        ts: {type: string, maxLength: 40}
+        signature: {type: string, maxLength: 200}
+        decision: {type: string, enum: [approved, denied]}
+        action_fingerprint: {type: string, minLength: 64, maxLength: 64}
+    PauseIn:
+      type: object
+      additionalProperties: false
+      required: [ts, signature, paused]
+      properties:
+        ts: {type: string, maxLength: 40}
+        signature: {type: string, maxLength: 200}
+        paused: {type: boolean}
+    PairIn:
+      type: object
+      additionalProperties: false
+      required: [code, public_key, name]
+      properties:
+        code: {type: string, minLength: 8, maxLength: 8}
+        public_key: {type: string, maxLength: 200, description: base64 X9.63 P-256 public key}
+        name: {type: string, minLength: 1, maxLength: 64}
+    PairOut: {type: object, required: [device_id, token], properties: {device_id: {type: string, format: uuid}, token: {type: string}}}
+    PushTokenIn:
+      type: object
+      additionalProperties: false
+      required: [token, environment]
+      properties:
+        token: {type: string, pattern: '^[0-9a-fA-F]{32,200}$'}
+        environment: {type: string, enum: [production, development]}
+    AgentApprovalIn:
+      type: object
+      additionalProperties: false
+      required: [capability, action_summary]
+      properties:
+        capability: {type: string, maxLength: 64}
+        action_summary: {type: string, maxLength: 500}
+        details: {type: object}
+    AgentApprovalOut:
+      type: object
+      required: [approval_id, state, expires_at]
+      properties:
+        approval_id: {type: [string, 'null'], format: uuid}
+        state: {type: string, enum: [pending, approved, denied, expired]}
+        expires_at: {type: [string, 'null'], format: date-time}
+    PolicyRuleOut:
+      type: object
+      required: [id, runner, project, mode, effects, source, expires_at]
+      properties:
+        id: {type: string, format: uuid}
+        runner: {type: [string, 'null']}
+        project: {type: [string, 'null']}
+        mode: {type: string, enum: [bypass, granular]}
+        effects: {type: object, additionalProperties: {type: string, enum: [allow, ask, deny]}}
+        source: {type: string}
+        expires_at: {type: [string, 'null'], format: date-time}
     NewInstruction:
       type: object
       additionalProperties: false
@@ -268,8 +425,8 @@ components:
         links: {type: object, required: [self], properties: {self: {type: string}}}
     InstructionStatus:
       type: string
-      description: 'captured = stored as an idea, nothing executed. awaiting_approval = task exists but a policy gate blocks execution.'
-      enum: [queued, routing, needs_clarification, captured, dispatched, awaiting_approval, failed, cancelled]
+      description: 'captured = stored as an idea, nothing executed. awaiting_approval = a policy gate or a policy-change confirmation is pending. applied = a voice policy change took effect.'
+      enum: [queued, routing, needs_clarification, captured, dispatched, awaiting_approval, applied, failed, cancelled]
     Instruction:
       type: object
       required: [id, client_instruction_id, status, created_at, updated_at]
@@ -277,13 +434,13 @@ components:
         id: {type: string, format: uuid}
         client_instruction_id: {type: string, format: uuid}
         status: {$ref: '#/components/schemas/InstructionStatus'}
-        intent: {type: [string, 'null'], enum: [new_project, existing_project, continue_task, capture_idea, research, implement_feature, status_query, approval_decision, null]}
+        intent: {type: [string, 'null'], enum: [new_project, existing_project, continue_task, capture_idea, research, implement_feature, status_query, approval_decision, policy_change, null]}
         project_id: {type: [string, 'null'], format: uuid}
         task_id: {type: [string, 'null'], format: uuid}
         agent_run_id: {type: [string, 'null'], format: uuid}
         approval_id: {type: [string, 'null'], format: uuid}
         candidates: {type: array, items: {type: object, required: [project_id, name], properties: {project_id: {type: string, format: uuid}, name: {type: string}}}}
-        error_code: {type: [string, 'null'], description: 'e.g. ambiguous_route, unknown_runner, ambiguous_runner'}
+        error_code: {type: [string, 'null'], description: 'e.g. ambiguous_route, unknown_runner, ambiguous_runner, policy_denied, policy_ambiguous, policy_scope_missing, policy_scope_ambiguous, policy_duration_missing'}
         progress: {oneOf: [{$ref: '#/components/schemas/RunProgress'}, {type: 'null'}]}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}

@@ -52,16 +52,4 @@ ALTER TABLE routing_decisions ADD CONSTRAINT routing_source_xor
 
 ALTER TABLE tasks ADD COLUMN instruction_id uuid UNIQUE REFERENCES instructions(id);
 
-CREATE TABLE approval_challenges (
- id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
- approval_id uuid NOT NULL REFERENCES approvals(id),
- action_fingerprint char(64) NOT NULL,
- nonce_hash char(64) NOT NULL UNIQUE,
- token text NOT NULL, -- shortcut: see backend/app/db.py; replace with per-device delivery (W-044)
- expires_at timestamptz NOT NULL,
- consumed_at timestamptz,
- principal_id uuid,
- created_at timestamptz NOT NULL DEFAULT now()
-);
-
 COMMIT;

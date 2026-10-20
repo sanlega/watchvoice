@@ -4,12 +4,25 @@ source of truth (enums are text here so the same code runs on SQLite in tests)."
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import (JSON, Boolean, CheckConstraint, Column, DateTime, ForeignKey, Integer, MetaData,
+from sqlalchemy import (JSON, Boolean, CheckConstraint, Column, DateTime, Enum, ForeignKey, Integer, MetaData,
                         Numeric, String, Table, Text, UniqueConstraint, Uuid, create_engine, event)
 from sqlalchemy.dialects.postgresql import JSONB
 
 metadata = MetaData()
 Json = JSON().with_variant(JSONB(), "postgresql")
+
+
+def pg_enum(name: str, *values: str) -> Enum:
+    """Native PostgreSQL enum (types created by the SQL migrations); plain VARCHAR on SQLite."""
+    return Enum(*values, name=name, create_constraint=False, validate_strings=True)
+
+
+TASK_STATE = pg_enum("task_state", "draft", "queued", "running", "waiting_approval", "completed", "failed", "cancelled")
+RUN_STATE = pg_enum("run_state", "queued", "provisioning", "running", "waiting_approval", "succeeded", "failed",
+                    "cancelled", "timed_out")
+APPROVAL_STATE = pg_enum("approval_state", "pending", "approved", "denied", "expired", "cancelled")
+INSTRUCTION_STATUS = pg_enum("instruction_status", "queued", "routing", "needs_clarification", "captured",
+                             "dispatched", "awaiting_approval", "applied", "failed", "cancelled")
 
 
 def now() -> datetime:
@@ -34,6 +47,8 @@ devices = Table(
     Column("firmware_version", Text), Column("credential_hash", Text, nullable=False),
     # 002: scopes; default keeps ESP32 devices audio-only.
     Column("scopes", JSON, nullable=False, default=lambda: ["recordings:write"]),
+    # 004: device-bound P-256 public key (X9.63, base64) for signed approvals; APNs registration
+    Column("public_key", Text), Column("apns_token", Text), Column("apns_env", Text),
     ts("revoked_at"), ts("last_seen_at"), ts("created_at", nullable=False, default=now))
 
 projects = Table(
@@ -61,7 +76,7 @@ instructions = Table(
     Column("language", Text), Column("project_hint", Uuid), Column("runner_hint", Text),  # 003
     Column("transcription_metadata", Json, nullable=False, default=dict),
     Column("request_digest", String(64), nullable=False),
-    Column("status", Text, nullable=False, default="queued"), Column("intent", Text),
+    Column("status", INSTRUCTION_STATUS, nullable=False, default="queued"), Column("intent", Text),
     Column("project_id", Uuid, ForeignKey("projects.id")),
     Column("task_id", Uuid), Column("agent_run_id", Uuid), Column("approval_id", Uuid),
     Column("candidates", Json, nullable=False, default=list), Column("error_code", Text),
@@ -97,7 +112,7 @@ tasks = Table(
     Column("instruction_id", Uuid, ForeignKey("instructions.id"), unique=True),  # 002
     Column("parent_task_id", Uuid), Column("title", Text, nullable=False),
     Column("description", Text, nullable=False, default=""), Column("intent", Text, nullable=False),
-    Column("agent_type", Text, nullable=False), Column("state", Text, nullable=False, default="draft"),
+    Column("agent_type", Text, nullable=False), Column("state", TASK_STATE, nullable=False, default="draft"),
     Column("execution_mode", Text, nullable=False, default="full"),
     Column("budget_usd", Numeric(12, 4), nullable=False, default=2),
     Column("trace_id", Uuid, nullable=False, default=uuid.uuid4),
@@ -111,17 +126,20 @@ runners = Table(  # 003: machines running T3 Code (VPS, PC, Mac) reachable throu
     Column("secret_env", Text, nullable=False),  # name of the env var holding the HMAC secret, never the secret
     Column("is_default", Boolean, nullable=False, default=False),
     Column("enabled", Boolean, nullable=False, default=True),
+    Column("trust", Text, nullable=False, default="isolated"),  # 004: isolated | cooperative
     ts("created_at", nullable=False, default=now), UniqueConstraint("user_id", "name"))
 
 agent_runs = Table(
     "agent_runs", metadata, pk(),
     Column("user_id", Uuid, ForeignKey("users.id"), nullable=False),
     Column("task_id", Uuid, ForeignKey("tasks.id"), nullable=False),
-    Column("attempt", Integer, nullable=False), Column("state", Text, nullable=False, default="queued"),
+    Column("attempt", Integer, nullable=False), Column("state", RUN_STATE, nullable=False, default="queued"),
     Column("executor", Text, nullable=False), Column("external_pr_url", Text),
     # 003: T3 Code execution tracking
     Column("runner_id", Uuid, ForeignKey("runners.id")), Column("callback_token_hash", String(64)),
     ts("callback_expires_at"), Column("summary", Text), Column("external_ref", Text), ts("last_event_at"),
+    # 004: runtime mode chosen by policy, deadline and stale notice
+    Column("runtime_mode", Text), ts("deadline_at"), ts("stale_notified_at"),
     ts("created_at", nullable=False, default=now), UniqueConstraint("task_id", "attempt"))
 
 capability_grants = Table(
@@ -135,23 +153,37 @@ capability_grants = Table(
 approvals = Table(
     "approvals", metadata, pk(),
     Column("user_id", Uuid, ForeignKey("users.id"), nullable=False),
-    Column("run_id", Uuid, ForeignKey("agent_runs.id"), nullable=False),
+    Column("run_id", Uuid, ForeignKey("agent_runs.id")),  # 004: nullable for policy_change approvals
+    # 004: action | policy_change | agent_request; payload = rule proposal or agent details
+    Column("kind", Text, nullable=False, default="action"), Column("risk", Text, nullable=False, default="high"),
+    Column("payload", Json, nullable=False, default=dict), Column("instruction_id", Uuid),
     Column("capability", Text, nullable=False), Column("action_summary", Text, nullable=False),
     Column("action_digest", String(64), nullable=False),
-    Column("state", Text, nullable=False, default="pending"),
+    Column("state", APPROVAL_STATE, nullable=False, default="pending"),
     ts("expires_at", nullable=False), Column("decided_by", Uuid, ForeignKey("users.id")), ts("decided_at"),
     ts("created_at", nullable=False, default=now))
 
-approval_challenges = Table(  # 002
-    "approval_challenges", metadata, pk(),
-    Column("approval_id", Uuid, ForeignKey("approvals.id"), nullable=False),
-    Column("action_fingerprint", String(64), nullable=False),
-    Column("nonce_hash", String(64), nullable=False, unique=True),
-    # shortcut: token kept so the owner can fetch it from GET /approvals; replace with
-    # a per-device encrypted delivery when step-up auth lands (W-044).
-    Column("token", Text, nullable=False),
-    ts("expires_at", nullable=False), ts("consumed_at"), Column("principal_id", Uuid),
-    ts("created_at", nullable=False, default=now))
+policy_rules = Table(  # 004: ADR-0001 §2
+    "policy_rules", metadata, pk(),
+    Column("user_id", Uuid, ForeignKey("users.id"), nullable=False),
+    Column("runner_id", Uuid, ForeignKey("runners.id")),  # NULL = any runner
+    Column("project_id", Uuid, ForeignKey("projects.id")),  # NULL = any project
+    Column("mode", Text, nullable=False),  # bypass | granular
+    Column("effects", Json, nullable=False, default=dict),  # capability -> allow | ask | deny
+    Column("source", Text, nullable=False),  # cli | voice
+    ts("expires_at"), ts("revoked_at"), ts("created_at", nullable=False, default=now),
+    CheckConstraint("mode IN ('bypass','granular')", name="policy_rules_mode"))
+
+pairing_codes = Table(  # 004
+    "pairing_codes", metadata, pk(),
+    Column("user_id", Uuid, ForeignKey("users.id"), nullable=False),
+    Column("code_hash", String(64), nullable=False, unique=True), Column("name", Text, nullable=False),
+    Column("replace_device_id", Uuid, ForeignKey("devices.id")),
+    ts("expires_at", nullable=False), ts("used_at"), ts("created_at", nullable=False, default=now))
+
+user_controls = Table(  # 004: global pause (kill switch)
+    "user_controls", metadata,
+    Column("user_id", Uuid, ForeignKey("users.id"), primary_key=True), ts("paused_at"))
 
 audit_events = Table(
     "audit_events", metadata, Column("id", Integer, primary_key=True, autoincrement=True),
@@ -183,3 +215,11 @@ def make_engine(url: str):
         def _fk_on(dbapi_conn, _):
             dbapi_conn.execute("PRAGMA foreign_keys=ON")
     return engine
+
+
+def parse_ts(value: str) -> datetime:
+    """ISO-8601 with offset or Z -> aware UTC datetime."""
+    dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        raise ValueError("timestamp without timezone")
+    return dt.astimezone(timezone.utc)
